@@ -7,8 +7,8 @@
 | 阶段 | 目标 | 关键验收 | 状态 |
 |---|---|---|---|
 | 0 | 骨架 + CI | `GET /health` → ok；CI 跑 pytest + ruff | ✅ 已完成 |
-| 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | ✅ 本阶段 |
-| 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | 待开始 |
+| 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | ✅ 已完成 |
+| 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | ✅ 本阶段 |
 | 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | 待开始 |
 | 4 | 安全权限 | 无凭证拒绝；越权被拦 | 待开始 |
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | 待开始 |
@@ -37,19 +37,37 @@ curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: applicatio
 ```bash
 .venv/Scripts/python -m pytest
 .venv/Scripts/python -m ruff check .
+.venv/Scripts/python -m ruff format --check src tests
+.venv/Scripts/python -m mypy
+```
+
+### 带数据库插件启动（阶段 2）
+
+插件默认不装（特性开关默认关），要靠环境变量显式开启；启用了 `sqlite` 却没给路径、或文件不存在，**启动即失败**：
+
+```bash
+DRIVER_PLUGINS=sqlite DRIVER_SQLITE_PATH=/tmp/demo.db \
+  .venv/Scripts/python -m uvicorn driver_platform.main:app --port 8000
+curl http://127.0.0.1:8000/v1/plugins                # [{"plugin_id":"sqlite",...}]
+curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: application/json" \
+     -d '{"tool":"search_database","arguments":{"table":"drivers","columns":["id","name"],"limit":2}}'
 ```
 
 ## 目录结构
 
 ```
 src/driver_platform/
-  main.py               create_app()：装配注册表、错误处理、路由
+  main.py               create_app()：装配配置、注册表、插件宿主、错误处理、路由
+  config.py             Settings.from_env()：DRIVER_PLUGINS / DRIVER_SQLITE_PATH
+  bootstrap.py          create_registry_and_host()：内置工具 + 按配置装载插件
   errors.py             PlatformError 体系 + 统一错误信封
   api/tools.py          GET /v1/tools、POST /v1/tools/execute
+  api/plugins.py        GET /v1/plugins
   tools/                Tool 契约、ToolRegistry、echo 内置工具
-tests/                  注册表单测 + 接口契约测试
-docs/stages/            每阶段设计说明（阶段 0、阶段 1）
-.github/workflows/ci.yml  CI：ruff check + pytest（Python 3.14）
+  plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件
+tests/                  注册表/接口契约/插件宿主/配置/search_database 测试
+docs/stages/            每阶段设计说明（阶段 0、阶段 1、阶段 2）
+.github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest（Python 3.14）
 Dockerfile              运行镜像（阶段 7 才验证）
 ```
 
@@ -59,9 +77,10 @@ Dockerfile              运行镜像（阶段 7 才验证）
 
 - [阶段 0：骨架 + CI](docs/stages/stage-0.md)
 - [阶段 1：核心服务 + 工具注册](docs/stages/stage-1.md) —— 对外契约（错误码、请求/响应形状、版本化规则）在这里
+- [阶段 2：插件系统 + 数据库插件](docs/stages/stage-2.md) —— 插件契约、`search_database` 参数语义、配置与开关
 
 ## 已知限制
 
-- `mypy` 未接入：阶段 1 的 `Tool` 契约（泛型入参/出参模型）已定，可接入静态类型检查。
 - CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测。
 - 工具执行无超时与并发限制，细节见阶段 1 说明的「已知限制」。
+- SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，细节见阶段 2 说明的「已知限制」。

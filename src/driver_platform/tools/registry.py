@@ -39,6 +39,13 @@ class ToolRegistry:
         except KeyError:
             raise ToolNotFoundError(f"未注册的工具：{name}") from None
 
+    def unregister(self, name: str) -> None:
+        """注销工具（插件卸载路径）。注册表只认名字，不追问来源。"""
+        try:
+            del self._tools[name]
+        except KeyError:
+            raise ToolNotFoundError(f"未注册的工具：{name}") from None
+
     def manifests(self) -> list[ToolManifest]:
         return [tool.manifest() for _, tool in sorted(self._tools.items())]
 

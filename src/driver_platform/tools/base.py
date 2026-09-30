@@ -19,7 +19,7 @@ TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 CONTRACT_VERSION_PATTERN = re.compile(r"^\d+\.\d+$")
 
 InT = TypeVar("InT", bound=BaseModel)
-OutT = TypeVar("OutT")
+OutT = TypeVar("OutT", bound=BaseModel)
 
 
 class ToolManifest(BaseModel):

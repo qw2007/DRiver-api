@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -74,7 +75,42 @@ class ToolExecutionError(PlatformError):
     status_code = 500
 
 
-def sanitize_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+class InvalidConfigurationError(PlatformError):
+    """配置缺失或非法。属于启动期错误：宁可起不来，也不静默降级。"""
+
+    code = "invalid_configuration"
+    status_code = 500
+
+
+class UnknownPluginError(PlatformError):
+    """配置里写了目录中不存在的插件 id。"""
+
+    code = "unknown_plugin"
+    status_code = 500
+
+
+class InvalidPluginError(PlatformError):
+    """插件作者写错了元数据（id / 版本格式非法）。"""
+
+    code = "invalid_plugin"
+    status_code = 500
+
+
+class PluginNotFoundError(PlatformError):
+    """要卸载的插件没有装载。"""
+
+    code = "plugin_not_found"
+    status_code = 404
+
+
+class PluginLoadError(PlatformError):
+    """插件装载失败（初始化抛错、工具名冲突）。此时注册表已回滚干净。"""
+
+    code = "plugin_load_failed"
+    status_code = 500
+
+
+def sanitize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """剥掉 pydantic 报错里的 ``ctx`` / ``input`` / ``url``。
 
     这些字段可能含异常对象（不可 JSON 序列化）或回显用户原文，只保留
