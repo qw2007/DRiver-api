@@ -10,6 +10,7 @@ from driver_platform.api.tools import router as tools_router
 from driver_platform.bootstrap import create_registry_and_host
 from driver_platform.config import Settings
 from driver_platform.errors import register_error_handlers
+from driver_platform.protocols import build_router as build_protocols_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -28,6 +29,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_error_handlers(app)
     app.include_router(tools_router)
     app.include_router(plugins_router)
+    # 协议层的端点是**适配器自己**带进来的：加一家协议不必改这里（原则「适配器隔离」）。
+    app.include_router(build_protocols_router())
 
     @app.get("/health")
     def health() -> dict[str, str]:

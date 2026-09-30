@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from driver_platform.config import ENV_PLUGINS, ENV_SQLITE_PATH, Settings
-from driver_platform.errors import InvalidConfigurationError, UnknownPluginError
+from driver_platform.config import ENV_PLUGINS, ENV_PROTOCOLS, ENV_SQLITE_PATH, Settings
+from driver_platform.errors import (
+    InvalidConfigurationError,
+    UnknownPluginError,
+    UnknownProtocolError,
+)
 from driver_platform.main import create_app
 
 
@@ -53,3 +57,22 @@ def test_sqlite_plugin_requires_existing_file(tmp_path):
         create_app(Settings(plugins=("sqlite",), sqlite_path=str(missing)))
 
     assert "不存在" in str(excinfo.value)
+
+
+def test_protocols_default_to_empty():
+    """特性开关默认关：默认实例一个协议适配器都不开。"""
+    assert Settings.from_env({}).protocols == ()
+
+
+def test_protocols_env_parsing():
+    settings = Settings.from_env({ENV_PROTOCOLS: " openai , mcp ,, "})
+
+    assert settings.protocols == ("openai", "mcp")
+
+
+def test_unknown_protocol_fails_at_startup():
+    with pytest.raises(UnknownProtocolError) as excinfo:
+        Settings.from_env({ENV_PROTOCOLS: "langchain"})
+
+    assert "langchain" in str(excinfo.value)
+    assert "mcp" in str(excinfo.value)  # 错误信息里给出可用协议

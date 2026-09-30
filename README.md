@@ -8,8 +8,8 @@
 |---|---|---|---|
 | 0 | 骨架 + CI | `GET /health` → ok；CI 跑 pytest + ruff | ✅ 已完成 |
 | 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | ✅ 已完成 |
-| 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | ✅ 本阶段 |
-| 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | 待开始 |
+| 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | ✅ 已完成 |
+| 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | ✅ 本阶段 |
 | 4 | 安全权限 | 无凭证拒绝；越权被拦 | 待开始 |
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | 待开始 |
 | 6 | 远程插件 | 远程注册可调用；下线后工具自动不可用 | 待开始 |
@@ -53,20 +53,43 @@ curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: applicatio
      -d '{"tool":"search_database","arguments":{"table":"drivers","columns":["id","name"],"limit":2}}'
 ```
 
+### 接协议（阶段 3）
+
+协议也是**默认关**：`DRIVER_PROTOCOLS` 留空则全关，写了不支持的协议名启动即失败。
+
+**导出给 OpenAI 兼容客户端**（纯 Schema 翻译，不调用模型）：
+
+```bash
+DRIVER_PROTOCOLS=openai .venv/Scripts/python -m uvicorn driver_platform.main:app --port 8000
+curl http://127.0.0.1:8000/v1/protocols/openai/tools   # {"tools":[{"type":"function","function":{...}}]}
+```
+
+**作为 MCP 服务端接给本地 Agent**（stdio；`mcp` 是可选依赖，装 `pip install -e ".[mcp]"`）。
+Claude Desktop / Codex 的 `mcpServers` 配置：
+
+```json
+{"mcpServers": {"driver-platform": {
+  "command": "<项目路径>/.venv/Scripts/python.exe",
+  "args": ["-m", "driver_platform.protocols.mcp_server"],
+  "env": {"DRIVER_PROTOCOLS": "mcp", "DRIVER_PLUGINS": "sqlite", "DRIVER_SQLITE_PATH": "/tmp/demo.db"}}}}
+```
+
+stdout 是协议通道，诊断一律写 stderr；工具执行失败按 MCP 惯例回 `isError=true` 的结果（错误码与 HTTP 侧相同），不是协议错误。
+
 ## 目录结构
 
 ```
 src/driver_platform/
   main.py               create_app()：装配配置、注册表、插件宿主、错误处理、路由
-  config.py             Settings.from_env()：DRIVER_PLUGINS / DRIVER_SQLITE_PATH
+  config.py             Settings.from_env()：DRIVER_PLUGINS / DRIVER_SQLITE_PATH / DRIVER_PROTOCOLS
   bootstrap.py          create_registry_and_host()：内置工具 + 按配置装载插件
   errors.py             PlatformError 体系 + 统一错误信封
   api/tools.py          GET /v1/tools、POST /v1/tools/execute
   api/plugins.py        GET /v1/plugins
-  tools/                Tool 契约、ToolRegistry、echo 内置工具
+  tools/                Tool 契约、ToolRegistry、executor（HTTP 与 MCP 共用执行路径）、echo 内置工具
   plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件
-tests/                  注册表/接口契约/插件宿主/配置/search_database 测试
-docs/stages/            每阶段设计说明（阶段 0、阶段 1、阶段 2）
+  protocols/            协议适配器：__init__（协议开关 + 路由装配）、openai_schema（纯翻译）、mcp（stdio 服务端）、mcp_server（进程入口）、routes
+tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配 测试
 .github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest（Python 3.14）
 Dockerfile              运行镜像（阶段 7 才验证）
 ```
@@ -78,9 +101,11 @@ Dockerfile              运行镜像（阶段 7 才验证）
 - [阶段 0：骨架 + CI](docs/stages/stage-0.md)
 - [阶段 1：核心服务 + 工具注册](docs/stages/stage-1.md) —— 对外契约（错误码、请求/响应形状、版本化规则）在这里
 - [阶段 2：插件系统 + 数据库插件](docs/stages/stage-2.md) —— 插件契约、`search_database` 参数语义、配置与开关
+- [阶段 3：协议适配层](docs/stages/stage-3.md) —— MCP stdio 服务端、OpenAI Schema 导出、协议开关与错误映射
 
 ## 已知限制
 
 - CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测。
 - 工具执行无超时与并发限制，细节见阶段 1 说明的「已知限制」。
 - SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，细节见阶段 2 说明的「已知限制」。
+- MCP 侧只做 stdio 与 tools（无 HTTP/SSE、无 resources/prompts、一次一个客户端），协议版本跟随 SDK，`output_model` 即协议输出契约，细节见阶段 3 说明的「已知限制」。

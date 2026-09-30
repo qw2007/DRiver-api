@@ -76,6 +76,20 @@ def db_client(demo_db: str) -> TestClient:
 
 
 @pytest.fixture
+def openai_client() -> TestClient:
+    """只开 openai 协议、不装插件——协议开关与插件开关互不牵连。"""
+    return TestClient(create_app(Settings(protocols=("openai",))))
+
+
+@pytest.fixture
+def openai_db_client(demo_db: str) -> TestClient:
+    """协议 + 插件都开：验收要求 OpenAI Schema 里能看到 search_database。"""
+    return TestClient(
+        create_app(Settings(plugins=("sqlite",), sqlite_path=demo_db, protocols=("openai",)))
+    )
+
+
+@pytest.fixture
 def sqlite_lib(tmp_path: Path) -> Iterator[str]:
     """空库（只有 sqlite_master，没有任何业务表）。"""
     path = tmp_path / "empty.db"

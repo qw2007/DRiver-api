@@ -49,6 +49,7 @@ class StubPlugin(Plugin):
         tools: list[Tool[object, object]] | None = None,
         *,
         setup_error: Exception | None = None,
+        teardown_error: Exception | None = None,
         plugin_id: str = "stub",
         version: str = "1.0.0",
     ) -> None:
@@ -56,6 +57,7 @@ class StubPlugin(Plugin):
         self.version = version
         self._tools = list(tools or [AlphaTool()])
         self._setup_error = setup_error
+        self._teardown_error = teardown_error
         self.teardown_calls = 0
 
     def setup(self) -> None:
@@ -67,6 +69,8 @@ class StubPlugin(Plugin):
 
     def teardown(self) -> None:
         self.teardown_calls += 1
+        if self._teardown_error is not None:
+            raise self._teardown_error
 
 
 @pytest.fixture
@@ -114,6 +118,20 @@ def test_unload_removes_tools_and_tears_down(host: PluginHost):
 def test_unload_unknown_plugin_raises(host: PluginHost):
     with pytest.raises(PluginNotFoundError):
         host.unload("ghost")
+
+
+def test_close_unloads_every_plugin_even_if_a_teardown_fails(host: PluginHost):
+    """退出收尾尽力而为：坏插件的 teardown 不能让别的插件留在一个半卸载状态里。"""
+    healthy = StubPlugin([AlphaTool()], plugin_id="healthy")
+    broken = StubPlugin([BetaTool()], plugin_id="broken", teardown_error=RuntimeError("关不掉"))
+    host.load(broken)
+    host.load(healthy)
+
+    host.close()
+
+    assert host.plugin_ids() == []
+    assert host._registry.names() == ["echo"]
+    assert (broken.teardown_calls, healthy.teardown_calls) == (1, 1)
 
 
 def test_tool_conflict_rolls_back_everything(host: PluginHost):

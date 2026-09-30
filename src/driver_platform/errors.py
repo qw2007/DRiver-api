@@ -110,6 +110,20 @@ class PluginLoadError(PlatformError):
     status_code = 500
 
 
+class UnknownProtocolError(PlatformError):
+    """配置里写了不支持的协议名（阶段 3 支持的协议在 ``config.PROTOCOL_NAMES``）。"""
+
+    code = "unknown_protocol"
+    status_code = 500
+
+
+class ProtocolNotEnabledError(PlatformError):
+    """协议适配器没被启用（特性开关默认关），请求按「资源不存在」处理。"""
+
+    code = "protocol_not_enabled"
+    status_code = 404
+
+
 def sanitize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """剥掉 pydantic 报错里的 ``ctx`` / ``input`` / ``url``。
 

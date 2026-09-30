@@ -73,11 +73,25 @@ class PluginHost:
         if loaded is None:
             raise PluginNotFoundError(f"未装载的插件：{plugin_id}")
 
+        # 先摘账再收尾：teardown 抛错时工具也已下线、插件也已除名，
+        # 不会留下一个「还在名单上但工具已经没了」的半卸载状态。
+        del self._plugins[plugin_id]
         for name in reversed(loaded.tool_names):
             if name in self._registry:  # 被别处摘掉过也不影响卸载
                 self._registry.unregister(name)
         loaded.plugin.teardown()
-        del self._plugins[plugin_id]
+
+    def close(self) -> None:
+        """逆序卸载全部插件——进程或应用退出时的收尾路径。
+
+        尽力而为：某个插件的 ``teardown()`` 抛错不能拦住其余插件收尾，
+        否则第一个坏插件就能让后面所有连接永远不关。
+        """
+        for plugin_id in reversed(self.plugin_ids()):
+            try:
+                self.unload(plugin_id)
+            except Exception as exc:  # noqa: BLE001 - 退出收尾，逐个留痕后继续
+                logger.warning("卸载插件 %s 失败：%s", plugin_id, exc)
 
     def manifests(self) -> list[PluginManifest]:
         return [
