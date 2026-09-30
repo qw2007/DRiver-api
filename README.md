@@ -6,8 +6,8 @@
 
 | 阶段 | 目标 | 关键验收 | 状态 |
 |---|---|---|---|
-| 0 | 骨架 + CI | `GET /health` → ok；CI 跑 pytest + ruff | ✅ 本阶段 |
-| 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | 待开始 |
+| 0 | 骨架 + CI | `GET /health` → ok；CI 跑 pytest + ruff | ✅ 已完成 |
+| 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | ✅ 本阶段 |
 | 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | 待开始 |
 | 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | 待开始 |
 | 4 | 安全权限 | 无凭证拒绝；越权被拦 | 待开始 |
@@ -27,6 +27,9 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Windows；Linux/macOS 用 .venv/bin/python
 .venv/Scripts/python -m uvicorn driver_platform.main:app --port 8000
 curl http://127.0.0.1:8000/health                  # {"status":"ok"}
+curl http://127.0.0.1:8000/v1/tools                # 已注册工具及其契约（JSON Schema）
+curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: application/json" \
+     -d '{"tool":"echo","arguments":{"message":"hi","times":2}}'
 ```
 
 检查：
@@ -39,23 +42,26 @@ curl http://127.0.0.1:8000/health                  # {"status":"ok"}
 ## 目录结构
 
 ```
-src/driver_platform/main.py   create_app()：FastAPI 实例与路由
-tests/test_health.py          /health 契约测试
-.github/workflows/ci.yml      CI：ruff check + pytest（Python 3.14）
-Dockerfile                    运行镜像（阶段 7 才验证）
+src/driver_platform/
+  main.py               create_app()：装配注册表、错误处理、路由
+  errors.py             PlatformError 体系 + 统一错误信封
+  api/tools.py          GET /v1/tools、POST /v1/tools/execute
+  tools/                Tool 契约、ToolRegistry、echo 内置工具
+tests/                  注册表单测 + 接口契约测试
+docs/stages/            每阶段设计说明（阶段 0、阶段 1）
+.github/workflows/ci.yml  CI：ruff check + pytest（Python 3.14）
+Dockerfile              运行镜像（阶段 7 才验证）
 ```
 
-## 阶段 0 说明
+## 阶段设计说明
 
-**技术选型理由**：规范首选 Python + FastAPI。理由是该路线后面几个阶段全靠生态——MCP SDK、Pydantic 校验（阶段 1 的 422 验收直接由它给出）、pytest/Testcontainers（阶段 2 的数据库插件集成测试）。Node/Go/Rust 备选只在「性能或单二进制部署是硬需求」时才值得付生态成本，当前不成立。
+每阶段的设计说明单独成文（选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署 / 非目标），README 只留路线表与结论：
 
-**模块设计**：阶段 0 只有「进程内 HTTP 服务」这一层，`create_app()` 工厂返回 FastAPI 实例，`app` 是 uvicorn 的默认入口。插件宿主、工具注册表、适配器都是后续阶段的事，此时不预留空目录、不做抽象。
-
-**接口定义**：`GET /health` → `200 {"status": "ok"}`，无鉴权、无依赖（阶段 5 起这里加指标，阶段 4 起加鉴权）。
-
-**测试与部署方案**：pytest 走 `TestClient`，对 `/health` 断言状态码与响应体；CI 在 Python 3.14 上 `ruff check` + `pytest`；镜像用 `python:3.14-slim` + `uvicorn`，本机无 Docker，Dockerfile 未实测，阶段 7 才纳入验收。
+- [阶段 0：骨架 + CI](docs/stages/stage-0.md)
+- [阶段 1：核心服务 + 工具注册](docs/stages/stage-1.md) —— 对外契约（错误码、请求/响应形状、版本化规则）在这里
 
 ## 已知限制
 
-- `mypy` 未接入：ruff 已覆盖 lint 与格式，类型检查在契约（阶段 1 的 `BasePlugin`）定下来后再加，避免现在对着空接口调类型。
+- `mypy` 未接入：阶段 1 的 `Tool` 契约（泛型入参/出参模型）已定，可接入静态类型检查。
 - CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测。
+- 工具执行无超时与并发限制，细节见阶段 1 说明的「已知限制」。
