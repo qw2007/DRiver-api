@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 
 from driver_platform import __version__
@@ -11,6 +13,9 @@ from driver_platform.bootstrap import create_registry_and_host
 from driver_platform.config import Settings
 from driver_platform.errors import register_error_handlers
 from driver_platform.protocols import build_router as build_protocols_router
+from driver_platform.security import AUTH_MODE_OFF, ENV_AUTH_MODE
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -21,6 +26,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     resolved = settings if settings is not None else Settings.from_env()
     registry, host = create_registry_and_host(resolved)
+
+    if resolved.auth_mode == AUTH_MODE_OFF:
+        # 开放模式是**说出来的**，不是默认出来的：静默开放会让人以为门已经锁上了。
+        logger.warning(
+            "鉴权未启用（%s=%s）：任何能连上该端口的调用方都能使用全部工具",
+            ENV_AUTH_MODE,
+            AUTH_MODE_OFF,
+        )
 
     app = FastAPI(title="Driver Platform", version=__version__)
     app.state.settings = resolved
@@ -34,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
+        """探针端点是唯一公开的端点：门禁不该把监控一起挡在门外。"""
         return {"status": "ok"}
 
     return app

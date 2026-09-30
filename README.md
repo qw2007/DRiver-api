@@ -9,8 +9,8 @@
 | 0 | 骨架 + CI | `GET /health` → ok；CI 跑 pytest + ruff | ✅ 已完成 |
 | 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | ✅ 已完成 |
 | 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | ✅ 已完成 |
-| 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | ✅ 本阶段 |
-| 4 | 安全权限 | 无凭证拒绝；越权被拦 | 待开始 |
+| 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | ✅ 已完成 |
+| 4 | 安全权限 | 无凭证拒绝；越权被拦 | ✅ 本阶段 |
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | 待开始 |
 | 6 | 远程插件 | 远程注册可调用；下线后工具自动不可用 | 待开始 |
 | 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | 待开始 |
@@ -76,20 +76,34 @@ Claude Desktop / Codex 的 `mcpServers` 配置：
 
 stdout 是协议通道，诊断一律写 stderr；工具执行失败按 MCP 惯例回 `isError=true` 的结果（错误码与 HTTP 侧相同），不是协议错误。
 
+### 开凭证与作用域（阶段 4）
+
+鉴权**默认关**（本地开发、stdio 由 Agent 自己 spawn，没有监听端口）；要开门就显式配：
+
+```bash
+DRIVER_AUTH_MODE=required DRIVER_API_KEYS="s3cret-full, s3cret-echo:echo" \
+  .venv/Scripts/python -m uvicorn driver_platform.main:app --port 8000
+curl -H "Authorization: Bearer s3cret-echo" http://127.0.0.1:8000/v1/tools      # 只有 echo
+curl -H "X-API-Key: s3cret-full" http://127.0.0.1:8000/v1/plugins              # 全权，可见 sqlite
+```
+
+`secret:tool1|tool2` 是该钥匙的**允许列表**（`secret` 或 `secret:*` = 全部工具）；越权是 403 `permission_denied`，无凭证/坏凭证是 401，`/health` 永远公开。MCP 一侧把**自己那一把**钥匙放进 `"env": {"DRIVER_PROTOCOLS": "mcp", "DRIVER_API_KEY": "s3cret-echo"}`（服务端清单是复数，客户端单数）。鉴权关闭时启动日志会警告，且**带了凭证就必须有效**。
+
 ## 目录结构
 
 ```
 src/driver_platform/
   main.py               create_app()：装配配置、注册表、插件宿主、错误处理、路由
-  config.py             Settings.from_env()：DRIVER_PLUGINS / DRIVER_SQLITE_PATH / DRIVER_PROTOCOLS
+  config.py             Settings.from_env()：插件 / SQLite 路径 / 协议 / 鉴权模式 / 钥匙清单
   bootstrap.py          create_registry_and_host()：内置工具 + 按配置装载插件
   errors.py             PlatformError 体系 + 统一错误信封
+  security/             凭证与作用域：keys（解析与主体）、policy（authenticate + 可见性）、http（请求头 → 依赖）
   api/tools.py          GET /v1/tools、POST /v1/tools/execute
   api/plugins.py        GET /v1/plugins
   tools/                Tool 契约、ToolRegistry、executor（HTTP 与 MCP 共用执行路径）、echo 内置工具
   plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件
   protocols/            协议适配器：__init__（协议开关 + 路由装配）、openai_schema（纯翻译）、mcp（stdio 服务端）、mcp_server（进程入口）、routes
-tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配 测试
+tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限 测试
 .github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest（Python 3.14）
 Dockerfile              运行镜像（阶段 7 才验证）
 ```
@@ -102,6 +116,7 @@ Dockerfile              运行镜像（阶段 7 才验证）
 - [阶段 1：核心服务 + 工具注册](docs/stages/stage-1.md) —— 对外契约（错误码、请求/响应形状、版本化规则）在这里
 - [阶段 2：插件系统 + 数据库插件](docs/stages/stage-2.md) —— 插件契约、`search_database` 参数语义、配置与开关
 - [阶段 3：协议适配层](docs/stages/stage-3.md) —— MCP stdio 服务端、OpenAI Schema 导出、协议开关与错误映射
+- [阶段 4：安全权限](docs/stages/stage-4.md) —— API Key 与工具作用域、401/403 语义、凭证来源（HTTP 头 / 环境变量）
 
 ## 已知限制
 
@@ -109,3 +124,4 @@ Dockerfile              运行镜像（阶段 7 才验证）
 - 工具执行无超时与并发限制，细节见阶段 1 说明的「已知限制」。
 - SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，细节见阶段 2 说明的「已知限制」。
 - MCP 侧只做 stdio 与 tools（无 HTTP/SSE、无 resources/prompts、一次一个客户端），协议版本跟随 SDK，`output_model` 即协议输出契约，细节见阶段 3 说明的「已知限制」。
+- 鉴权默认关且只到「工具名」这一层：不配 `DRIVER_AUTH_MODE=required` 就是开放的，密钥明文放在环境变量里，没有速率限制、配额、审计与吊销，细节见阶段 4 说明的「已知限制」。

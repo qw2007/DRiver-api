@@ -124,6 +124,27 @@ class ProtocolNotEnabledError(PlatformError):
     status_code = 404
 
 
+class MissingCredentialsError(PlatformError):
+    """鉴权已开，但请求没带凭证。"""
+
+    code = "missing_credentials"
+    status_code = 401
+
+
+class InvalidCredentialsError(PlatformError):
+    """凭证不在服务端清单里（或用了不支持的 Authorization 方案）。"""
+
+    code = "invalid_credentials"
+    status_code = 401
+
+
+class PermissionDeniedError(PlatformError):
+    """凭证有效，但该工具不在它的作用域内——越权是 403，不是 404。"""
+
+    code = "permission_denied"
+    status_code = 403
+
+
 def sanitize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """剥掉 pydantic 报错里的 ``ctx`` / ``input`` / ``url``。
 
