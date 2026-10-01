@@ -187,7 +187,7 @@ scrape_configs:
 
 ## 测试与部署方案
 
-**测试**（`tests/test_deploy_config.py`，14 个用例，不起容器——起容器是 CI 与本机验收的事）：
+**测试**（`tests/test_deploy_config.py`，15 个用例，不起容器——起容器是 CI 与本机验收的事）：
 守的是「静态错、但不会在开发时暴露」的三类问题：
 
 1. **配置名对不上**：compose 里每个 `DRIVER_*` 都必须是平台（`config.py` / `security/keys.py` 的
@@ -200,7 +200,8 @@ scrape_configs:
    provisioning 的挂载路径与面板目录路径。对不上时 Grafana 不报错，只是面板显示
    「Datasource not found」。
 4. 另外还钉住：演示库种子建出的 `customers` 表与 README 的验收示例是同一份 schema（示例能跑通而不
-   只是看起来对）、种子幂等、入口脚本只在开关打开时种库且最后一定 `exec`。
+   只是看起来对）、种子幂等、入口脚本只在开关打开时种库且最后一定 `exec`；以及 Grafana 那两项
+   `GF_PLUGINS_*` 开关必须是关的（理由见下面第 6 节：开着会注销自带数据源插件）。
 
 **部署**：
 
@@ -322,8 +323,14 @@ driver-platform` → `up -d --no-deps driver-platform` → 轮询容器健康状
 ### 5. CI
 
 `deploy` 任务里那串命令在本机逐步跑过（`config` → `build` → `up -d --no-deps` → 轮询健康 →
-`/health` + `/metrics` + 带钥匙调 `search_database` → `down -v`），与工作流里写的一致；
-CI 上的实际结果见 GitHub Actions 页面（本机不是 runner）。
+`/health` + `/metrics` + 带钥匙调 `search_database` → `down -v`），与工作流里写的一致。
+
+CI 上的实际结果（提交 `a97e3ab`，[run 36832468903](https://github.com/qw2007/DRiver-api/actions/runs/36832468903)）：
+`test` 与 `deploy` 两个任务均 **success**，逐步结果为 —— `test`：ruff check / ruff format --check
+src tests deploy examples / mypy / pytest 全绿；`deploy`：`docker compose config --quiet` → `build
+driver-platform` → `up -d --no-deps` → 健康检查轮询通过 → `/health` 与 `/metrics` 冒烟 → 按演示库调用
+`search_database` → `down -v`，九步全部 success。即「CI/CD 通过」这条验收标准由真实 runner 结果背书，
+不只是本机的等价命令。
 
 ### 6. 本阶段自己踩出并修掉的真实缺陷
 
