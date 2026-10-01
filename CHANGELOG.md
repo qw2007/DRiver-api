@@ -1,6 +1,6 @@
 # 变更日志（CHANGELOG）
 
-驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–4 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
+驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–5 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
 
 - 整体任务目标见 [`docs/task-brief.md`](docs/task-brief.md)；
 - 每阶段的设计说明（技术选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署方案）见 [`docs/stages/`](docs/stages/)。
@@ -14,6 +14,7 @@
 | 2 插件系统 + 数据库插件 | `5efc1c0` | 2026-09-30 20:36 | 23 files, +1296 / −36 | 工具表出现 `search_database`；插件可装载/卸载；结构化结果 |
 | 3 协议适配层 | `6ee7632` | 2026-09-30 20:49 | 21 files, +1018 / −47 | MCP 客户端 list/call `search_database`；OpenAI Schema 导出 |
 | 4 安全权限 | `e9750c1` | 2026-09-30 20:57 | 18 files, +912 / −33 | 无凭证 401；越权 403 |
+| 5 可观测性 | `80cd902` | 2026-10-01 | 24 files, +1925 / −48 | Grafana 看 QPS/延迟/错误率；日志按 `request_id` 追全链路 |
 | 文档（任务书 + 变更日志） | `783b5c6` | 2026-10-01 | 4 files, +409 / −2 | `docs/task-brief.md` + `CHANGELOG.md` + README 入口 |
 | — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 
@@ -110,6 +111,28 @@
 
 **已知限制**：鉴权只到「工具名」这一层；密钥明文放在环境变量里；没有速率限制、配额、审计与吊销。
 
+## 阶段 5：可观测性（`80cd902`，2026-10-01）
+
+**目标**：Grafana 上看得见 QPS / 延迟 / 错误率，日志能按 `request_id` 串起一次调用。
+
+**交付物**：`observability/{context,metrics,logging,middleware,routes}.py`；`config.py` 增 `DRIVER_METRICS_ENABLED` / `DRIVER_LOG_LEVEL` / `DRIVER_LOG_FORMAT`；`main.py` 装配（日志配置 + 按开关挂中间件与 `/metrics`）；`errors.py` 信封增可选 `request_id`；`protocols/mcp.py` 每次 `tools/call` 发号；`tools/executor.py` 单点埋点；5 个新测试文件 + 3 处既有断言补齐；`docs/observability/{prometheus.yml,grafana-dashboard.json}`；`docs/stages/stage-5.md`。README 的路线表、目录结构、用法与已知限制同步更新。
+
+**关键决策与理由**
+
+- **指标默认关，日志与 `request_id` 常开**：`/metrics` 是一个无鉴权的新端点，多开一个端点就是多一块暴露面，所以要显式开；而结构化日志与请求号是零契约成本、又是排障刚需，没有理由默认关。
+- **埋点只放一处（`tools/executor.py`）**：HTTP 与 MCP 共用同一条执行管线才能有同一个口径，以后接阶段 6 的远程插件也自动同源——不需要记得在第三个协议里补埋点。
+- **`outcome` 复用对外错误码词汇**（`success` / `permission_denied` / `invalid_arguments` / `tool_not_found` / `tool_execution_failed` / `internal_error`）：能按 `code` 分支的地方就能按 `outcome` 建面板，不引入第二套词汇去维护映射表。
+- **标签不许由调用方决定**：`route` 只取路由模板（用原始路径会让时间序列基数随调用方输入膨胀），未注册的工具名统一落 `unknown`（工具名来自请求体），原始名只进日志。
+- **手写纯 ASGI 中间件，不用 `BaseHTTPMiddleware`**：后者把响应体包成流、contextvars 传播易踩坑，而且看不到 `http.response.start` 上的真实 status（`/metrics` 之外的错误状态码就记不准）。
+- **只挂 `driver_platform` 一支 logger 且 `propagate` 保持真**：不去 root 上抢 handler，才不会和 uvicorn、pytest 的 `caplog` 打架；日志写 stderr——MCP 的 stdout 是协议通道，碰不得。
+- **`/metrics` 与 `/health` 一样免凭证**：抓取方是 Prometheus 不是人；暴露面靠「默认关 + 阶段 7 的 compose 不把它映射到公网」来管，而不是靠再发一把钥匙。
+- **信封里的 `request_id` 是可选扩展**：多一个字段不破坏既有调用方，MCP 的 stdio 没有响应头，错误信封是唯一能带号回去的地方。
+- **`log_format` / `log_level` / `metrics_enabled` 的非法值一律启动即失败**：配置错误在启动期喊出来，比运行期发现日志格式没生效便宜得多。
+
+**验收证据**：门禁全绿——`pytest` **167 passed**、覆盖率 **94%**（1021 语句 / 64 未覆盖），`ruff check .` All checks passed，`ruff format --check src tests` 51 files，`mypy src` 33 source files，`bandit -r src -q` exit 0；`/metrics` 开关开时返回四个指标的真实样本行、关时 404；`X-Request-ID` 原样透传或由服务端发 32 位 hex，工具 404 信封的 `request_id` 与响应头同值；Prometheus target `health=up`，取到 7 条 HTTP 序列与按 `tool,outcome` 的工具序列；Grafana 13.2.3 上数据源 `prom-main` + 面板 `driver-platform-overview`（4 个面板）导入成功，经其数据源代理执行四个表达式分别取到 QPS `0.2545`、P95 `0.00475`、错误率 `0`、`success/echo 0.00678`。逐条证据见[阶段 5 说明](docs/stages/stage-5.md)的「验收证据」。
+
+**已知限制**：直方图用默认桶（5 ms–10 s）；不记请求/响应体；`request_id` 只在**本进程内**贯穿（没有 traceparent）；指标是进程内的，重启归零；框架级 500（由最外层 `ServerErrorMiddleware` 生成）没有 `X-Request-ID` 响应头——指标与日志仍带号。
+
 ---
 
 ## 工具链与环境约束（非阶段交付，2026-10-01）
@@ -135,10 +158,10 @@
 
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4，外加 1 次工具链与环境提交，共 7 个提交、54 个受版本控制的文件；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip-audit` → No known vulnerabilities found；`pytest` → 98 passed，覆盖率 92%；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5，外加 2 次文档提交与 1 次工具链与环境提交，共 9 个提交、68 个受版本控制的文件；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 51 files already formatted；`mypy src` → Success: no issues found in 33 source files；`bandit -r src -q` → exit 0；`pip-audit` → No known vulnerabilities found；`pytest` → 167 passed，覆盖率 94%；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
-- **下一步**：阶段 5「可观测性」—— 目标是 Grafana 看 QPS/延迟/错误率、日志按 `request_id` 追全链路。本机 Docker 与 Prometheus / Grafana 镜像已就绪（[环境手册](docs/environment.md) §2），**面板可以在本机真验**；仍建议与阶段 7 的 Compose 合并复验一次，避免出现两套部署描述。
+- **下一步**：阶段 6「远程插件」—— 目标是远程注册的插件可被调用、下线后工具自动不可用。现有插件宿主（`plugins/host.py` + `Plugin` 契约）就是为这一步留的口子，`/v1/plugins` 目前只读；阶段 7 的 Compose 会把 Prometheus / Grafana 与本服务放进同一份部署描述（`docs/observability/` 里现在这套是给本机联调用的，届时换成服务名与镜像 digest）。
 
 ## 已知限制（汇总）
 
@@ -147,4 +170,5 @@
 3. SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，详见阶段 2 说明；
 4. MCP 侧只做 stdio 与 tools，协议版本跟随 SDK，详见阶段 3 说明；
 5. 鉴权默认关且只到工具名粒度，无速率限制/配额/审计/吊销，详见阶段 4 说明；
-6. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
+6. 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零），`request_id` 只在本进程内贯穿（无 traceparent），访问日志不记请求体，详见阶段 5 说明；
+7. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
