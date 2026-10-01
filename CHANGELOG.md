@@ -1,6 +1,6 @@
 # 变更日志（CHANGELOG）
 
-驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–6 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
+驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–7 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
 
 - 整体任务目标见 [`docs/task-brief.md`](docs/task-brief.md)；
 - 每阶段的设计说明（技术选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署方案）见 [`docs/stages/`](docs/stages/)。
@@ -16,6 +16,7 @@
 | 4 安全权限 | `e9750c1` | 2026-09-30 20:57 | 18 files, +912 / −33 | 无凭证 401；越权 403 |
 | 5 可观测性 | `80cd902` | 2026-10-01 | 24 files, +1925 / −48 | Grafana 看 QPS/延迟/错误率；日志按 `request_id` 追全链路 |
 | 6 远程插件 | `a2a0abc` | 2026-10-01 | 17 files, +1824 / −17 | 远程注册即可调用；`DELETE` 下线后工具自动不可用 |
+| 7 部署交付 | `803d3c6` | 2026-10-01 | 14 files, +1052 / −28 | `docker compose up` 起全平台；容器健康、指标被抓、面板有数 |
 | 文档（任务书 + 变更日志） | `783b5c6` | 2026-10-01 | 4 files, +409 / −2 | `docs/task-brief.md` + `CHANGELOG.md` + README 入口 |
 | — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 
@@ -161,6 +162,31 @@
 
 ---
 
+## 阶段 7：部署交付（`803d3c6`，2026-10-01）
+
+**目标**：`docker compose up` 一条命令起全平台（驱动平台 + SQLite 插件 + Prometheus + Grafana）；CI/CD 通过。
+
+**交付物**：`docker-compose.yml`（三个服务 + 三个命名卷）；`Dockerfile`（分层构建 + `HEALTHCHECK` + 入口脚本）；`.dockerignore`；`deploy/docker/entrypoint.py`、`deploy/demo/seed_demo_db.py`、`deploy/prometheus/prometheus.yml`、`deploy/grafana/provisioning/{datasources,dashboards}/`；`.github/workflows/ci.yml` 新增 `deploy` 任务；`docs/observability/grafana-dashboard.json` 改为 provisioning-ready；`tests/test_deploy_config.py`（15 例）；`docs/stages/stage-7.md`。README 的路线表、目录结构、用法与已知限制同步更新；dev extras 增 `PyYAML`。
+
+**关键决策与理由**
+
+- **Compose 而不是 K8s / Helm**：本阶段要证明的是「一台机器、一条命令、可复现」，部署描述就是仓库里的一个文件；多副本、滚动更新、就绪探针是阶段 8 的事，到那时这份 compose 文件正好是对照物。
+- **第三方镜像钉摘要，基础镜像用标签**：两者要的东西不同 —— `prom/prometheus`、`grafana/grafana` 要**行为可复现**（钉 `@sha256:…`，摘要记在环境手册 §2），`python:3.14-slim` 要**安全补丁自动进来**（用标签）。取舍记入已知限制。
+- **本服务用 `build: .` 不推镜像仓库**：`docker compose build` 本身就是构建证明，CI 跑得通；推仓库要有 registry 凭据、tag 与版本号策略（包版本仍是 `0.0.0`），属于交付流水线的范围，本阶段不引入。
+- **Grafana 用 provisioning 文件，面板只有一份真话**：数据源 `prom-main` 与四个面板都以仓库文件为准，`up` 之后打开就有；为此把阶段 5 那份面板 JSON 改成 provisioning-ready（去掉 `${DS_PROMETHEUS}` 占位符、固定 uid）——prov库isioning 不做占位符替换，留着占位符会静默变成「Datasource not found」。
+- **容器入口脚本种一份演示库**：SQLite 插件是**只读**打开库的，没有种子文件就是「容器起来了、`search_database` 却查不了」。种子由 `DRIVER_SEED_DEMO_DB` 控制、文件存在则跳过（幂等），生产设 `0` 挂自己的库。
+- **入口脚本用 Python 且 `os.execvp`**：Windows 上写 shell 脚本容易带 CRLF；`exec` 让 uvicorn 成为 PID 1，`docker stop` 的 SIGTERM 直达应用——阶段 8 的滚动更新要靠这条。
+- **健康检查用 `python -c urllib`，容器里不装 curl**：镜像里本来就有 Python，为一个探针再拉一层不值得。`prometheus` 用 `depends_on: service_healthy` 等平台健康——否则启动初期看板上是一段 `up=0`。
+- **部署契约用测试钉住**：「容器能起来」不能只在开发机验一次。15 个不起容器的用例守住三类静态错误：① compose 里每个 `DRIVER_*` 都必须是平台真会读的名字（打错一个字母就是启动失败或静默走默认值）；② 第三方镜像必须是摘要形态、`.dockerignore` 必须排掉 `.venv/`/`.git/`/`tests/`/`docs/`；③ Grafana 数据源 uid ↔ 面板 `datasource.uid` ↔ provisioning 挂载路径三处必须对上（对不上时 Grafana 不报错，只是面板没数据）。
+- **CI 的 `deploy` 任务不起 Prometheus / Grafana**：拉两个第三方镜像对冒烟没有增益，纯粹花时间；冒烟用 `--no-deps` 只起平台，跑完 `down -v` 收尾。
+- **Grafana 关闭自带插件的预装与自动更新**（`GF_PLUGINS_PREINSTALL_DISABLED` / `GF_PLUGINS_PREINSTALL_AUTO_UPDATE`）：Grafana 13 默认在启动时把自带插件升级到最新版，先停掉旧进程再从 `storage.googleapis.com` 下载；离线或受限网络下下载失败会**连带注销**自带的那份——包括 prometheus 数据源。这是本阶段真起全栈才暴露的缺陷，证据链与修复见阶段 7 说明的验收证据第 6 条。
+
+**验收证据**：门禁全绿——`pytest` **256 passed**（0 failed / 0 error）、覆盖率 **95%**（1248 语句 / 68 未覆盖），`ruff check .` All checks passed，`ruff format --check src tests deploy examples` 58 files，`mypy` 34 source files。本机 compose 全栈（Docker Desktop，engine 29.8.1 / compose v5.5.1）：`config --quiet` / `build` / `up -d` 全部 exit 0，`docker compose ps` 三个服务 `Up`（平台 `healthy`），命名卷里 `tables=['customers','orders']`、`customers rows=4`；`GET /health` → 200；带 `read-key` 调 `search_database` 查上海 → 200 `row_count=2` 的两行真数据，去掉钥匙 → 401；Prometheus target `http://driver-platform:8000/metrics` `health=up`，查询 `driver_tool_calls_total` → `{instance="compose",job="driver-platform",outcome="success",tool="search_database"} 1`；Grafana `/api/health` ok、数据源 `prom-main`（`readOnly=true`，来自 provisioning）、面板 `driver-platform-overview` 四个面板全指向 `prom-main`，经 `/api/ds/query` 与数据源代理都能取到数；容器日志是阶段 5 的 JSON 契约，`event=tool_call` 带 `request_id` 与 `duration_ms`，抓 `/metrics` 的来源是 `172.18.0.3`（Prometheus 容器）。逐条证据见[阶段 7 说明](docs/stages/stage-7.md)的「验收证据」。
+
+**已知限制**：单副本（重启期间不可用）；容器以 root 跑、无资源限额、无只读根文件系统；第三方镜像钉的是 amd64 平台摘要；基础镜像用标签；compose 里的演示钥匙是明文；`/metrics` 无鉴权且暴露在宿主端口；Prometheus 只在平台健康后才开始抓取；Grafana 首次启动在 WSL 卷上迁移极慢（本机约 6.5 分钟，卷建好后约 20 秒）；`docker compose down -v` 会删三个数据卷；演示库种子只认 SQLite；provisioned 面板不允许 UI 修改；Grafana 自带插件不能运行时自动更新（只能改镜像摘要）。
+
+---
+
 ## 工具链与环境约束（非阶段交付，2026-10-01）
 
 **目标**：为阶段 5 备齐工具，并把本机开发环境的坑一次性固化下来——**不改变任何对外行为**。
@@ -184,10 +210,10 @@
 
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6，外加 4 次文档提交、1 次工具链与环境提交与 1 次任务状态更新，共 13 个提交、73 个受版本控制的文件；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests examples` → 55 files already formatted；`mypy src` → Success: no issues found in 34 source files；`pytest` → **241 passed**，覆盖率 **95%**（`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7，外加 4 次文档提交、1 次工具链与环境提交与 1 次任务状态更新，共 15 个提交、82 个受版本控制的文件；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → 58 files already formatted；`mypy src` → Success: no issues found in 34 source files；`pytest` → **256 passed**，覆盖率 **95%**（1248 语句 / 68 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
-- **下一步**：阶段 7「部署交付」—— `docker compose up` 起全平台（本服务 + SQLite 插件 + Prometheus + Grafana），CI/CD 通过；`docs/observability/` 里现在这套 Prometheus 配置是给本机联调用的，届时换成服务名（`driver-platform:8000`）与手册 §2 记录的镜像 digest。
+- **下一步**：阶段 8「生产加固」—— 多副本、滚动更新不中断（compose 已用 `exec` 让 uvicorn 成为 PID 1，`SIGTERM` 直达应用，可直接接）、旧版 Agent 兼容；阶段 7 起全平台只需在仓库根执行 `docker compose up -d --build`。
 
 ## 已知限制（汇总）
 
@@ -198,4 +224,5 @@
 5. 鉴权默认关且只到工具名粒度，无速率限制/配额/审计/吊销，详见阶段 4 说明；
 6. 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零），`request_id` 只在本进程内贯穿（无 traceparent），访问日志不记请求体，详见阶段 5 说明；
 7. 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，`base_url` 是单点且每次调用新建 HTTP 客户端，详见阶段 6 说明；
-8. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
+8. 部署是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
+9. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。

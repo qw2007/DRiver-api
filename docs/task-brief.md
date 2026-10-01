@@ -27,7 +27,7 @@
 | 4 | 安全权限 | 无凭证被拒绝；越权被拦 | ✅ 已完成 |
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | ✅ 已完成 |
 | 6 | 远程插件 | 远程注册可调用；插件下线后工具自动不可用 | ✅ 已完成 |
-| 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | 待开始 |
+| 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | ✅ 已完成 |
 | 8 | 生产加固 | 多副本；滚动更新不中断；旧版 Agent 兼容 | 待开始 |
 
 ## 四、八条核心原则（约束，不是建议）
@@ -48,14 +48,14 @@
 | 语言 / 框架 | Python 3.11+（CI 与实测为 3.14）、FastAPI、pydantic v2、uvicorn | 规范首选方案；MCP / Pydantic / pytest 生态必须 |
 | 质量门禁 | ruff（lint + format）、mypy、pytest、httpx/TestClient | 四道门禁全绿才算阶段完成 |
 | 协议 | 官方 `mcp` SDK（**可选依赖** `driver-platform[mcp]`）；OpenAI 侧只做纯 Schema 翻译 | 协议细节交给 SDK，平台只写「注册表 ↔ 协议类型」的翻译 |
-| 数据库插件 | 先 SQLite（零依赖、可进 CI），PostgreSQL 复用同一插件契约 | PostgreSQL 留到阶段 7（Docker/Testcontainers） |
+| 数据库插件 | 先 SQLite（零依赖、可进 CI），PostgreSQL 复用同一插件契约 | PostgreSQL 插件尚未落地（阶段 7 只做部署交付；本机 Docker 已可用，后续可用 Testcontainers 补） |
 
-**本机环境的如实记录**：开发机上没有 Docker（阶段 7 的 `docker compose` 无法在本机验证），也没有 uv；受限沙箱下跑带 `tmp_path` 的 pytest 需要提权（原因见 `CHANGELOG.md` 的「已知限制」）。
+**本机环境的如实记录**：开发机上已有 Docker（engine 29.8.1 / compose v5.5.1，阶段 7 的 `docker compose up` 已在本机实测），但没有 uv；受限沙箱下跑带 `tmp_path` 的 pytest、`pip` 安装与 `docker` 命令都需要提权（原因与逐条解法见 [`docs/environment.md`](environment.md) 与 `CHANGELOG.md` 的「已知限制」）。
 
 ## 六、交付规范
 
 - 每阶段**先出设计说明，再落地代码**，设计说明含五件套：技术选型理由 / 模块设计 / 接口定义 / 关键代码示例 / 测试与部署方案 → `docs/stages/stage-N.md`；
-- 每阶段结束必须 `ruff check .`、`ruff format --check src tests`、`mypy`、`pytest` 全绿，且 CI 可跑；
+- 每阶段结束必须 `ruff check .`、`ruff format --check src tests deploy examples`、`mypy`、`pytest` 全绿，且 CI 可跑；
 - 配置写错**启动即失败**，不静默降级；
 - README 与阶段文档随代码同步更新。
 
