@@ -210,7 +210,7 @@
 
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7，外加 6 次文档提交、1 次工具链与环境提交与 1 次任务状态更新，共 16 个提交、82 个受版本控制的文件；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7，外加 7 次文档提交、1 次工具链与环境提交与 1 次任务状态更新，共 17 个提交、83 个受版本控制的文件（换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
 - **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → 58 files already formatted；`mypy src` → Success: no issues found in 34 source files；`pytest` → **256 passed**，覆盖率 **95%**（1248 语句 / 68 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
 - **下一步**：阶段 8「生产加固」—— 多副本、滚动更新不中断（compose 已用 `exec` 让 uvicorn 成为 PID 1，`SIGTERM` 直达应用，可直接接）、旧版 Agent 兼容；阶段 7 起全平台只需在仓库根执行 `docker compose up -d --build`。

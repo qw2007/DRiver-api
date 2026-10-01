@@ -201,6 +201,7 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 项目级文档：
 
 - [任务书：整体目标与 9 阶段验收标准](docs/task-brief.md)
+- [交接说明：换机器/换会话继续开发前必读](docs/handoff.md)
 - [变更日志：阶段 0–7 的逐阶段实现记录与验收证据](CHANGELOG.md)
 - [环境与工具手册：本机工具链、提权清单、沙箱约束与 GitHub/Docker 直连解法](docs/environment.md)
 
