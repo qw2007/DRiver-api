@@ -76,6 +76,9 @@ CI（GitHub Actions `ubuntu-latest` + Python 3.14）不受本文件约束——C
 | 受限全量 `pytest` | 68 passed / **30 errors**，全部是 `tmp_path` 类夹具的 `PermissionError`（`test_search_database` 18、`test_security` 6、`test_mcp_scopes` 2、`test_mcp_server` 2、`test_config` 1、`test_openai_schema` 1） |
 | 受限跑不含 `tmp_path` 的文件 | 正常通过 |
 
+覆盖率（`pytest --cov=driver_platform --cov-report=term-missing`）：**92%**（773 语句 / 63 未覆盖）。
+门槛暂未强制：要不要设 `--cov-fail-under`、定在多少，属于项目决策，不在这里偷偷加。
+
 安全审计：
 
 - `pip-audit`：`No known vulnerabilities found`（**必须带 `--cache-dir .pip-audit-cache`**，受限模式建不了默认缓存目录 `%LOCALAPPDATA%\pip-audit`）。

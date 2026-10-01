@@ -127,7 +127,7 @@
 - **Docker 镜像走国内加速**：`~/.docker/daemon.json` 增 `registry-mirrors` 后拉取正常（直连 `registry-1.docker.io` 被 reset）。
 - **两个镜像要钉摘要**：`prom/prometheus` 与 `grafana/grafana` 目前是 `latest`，阶段 5 组 Compose 时必须换成手册 §2 记录的 digest，否则「可复现部署」不成立。
 
-**验收证据**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip_audit --cache-dir .pip-audit-cache --progress-spinner off` → No known vulnerabilities found；提权全量 `pytest -p no:cacheprovider` → 98 passed；`git ls-remote origin` → `783b5c6 refs/heads/master`（exit 0，未再传任何 `-c` 参数）。
+**验收证据**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip_audit --cache-dir .pip-audit-cache --progress-spinner off` → No known vulnerabilities found；提权全量 `pytest -p no:cacheprovider` → 98 passed（覆盖率 **92%**：773 语句 / 63 未覆盖）；`gh --version` → 2.102.0、`jq --version` → 1.8.2（`echo '{"a":{"b":42}}' | jq .a.b` → `42`）；`docker images` → prom/prometheus 381 MB + grafana/grafana 1.94 GB；`git ls-remote origin` → `783b5c6 refs/heads/master`（exit 0，未再传任何 `-c` 参数）。
 
 **已知限制**：以上修正都只作用于**本机**；CI 不需要提权、不需要 schannel、不需要镜像加速。受限模式下带 `tmp_path` 的 pytest 仍有 30 个用例失败，根因（`0o700` 目录的 DACL 对受限令牌 deny-only）与提权清单一并写在[环境与工具手册](docs/environment.md)。
 
@@ -136,7 +136,7 @@
 ## 当前状态（截至最新提交）
 
 - **已完成**：阶段 0 / 1 / 2 / 3 / 4，外加 1 次工具链与环境提交，共 7 个提交、54 个受版本控制的文件；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip-audit` → No known vulnerabilities found；`pytest` → 98 passed；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip-audit` → No known vulnerabilities found；`pytest` → 98 passed，覆盖率 92%；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
 - **下一步**：阶段 5「可观测性」—— 目标是 Grafana 看 QPS/延迟/错误率、日志按 `request_id` 追全链路。本机 Docker 与 Prometheus / Grafana 镜像已就绪（[环境手册](docs/environment.md) §2），**面板可以在本机真验**；仍建议与阶段 7 的 Compose 合并复验一次，避免出现两套部署描述。
 
