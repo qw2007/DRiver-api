@@ -163,6 +163,49 @@ class PermissionDeniedError(PlatformError):
     status_code = 403
 
 
+class RemotePluginDisabledError(PlatformError):
+    """远程插件管理接口没打开（``DRIVER_REMOTE_PLUGIN_ENABLED`` 默认关）。
+
+    与 ``/metrics`` 的「开关关就不注册路由」刻意不同：这条路由的程序性调用方会把
+    FastAPI 默认的 ``{"detail": "Not Found"}`` 读成「URL 写错了」，而它其实是
+    「这个特性被关掉了」。所以路由**始终存在**，关的时候给一个说得清的 code。
+    """
+
+    code = "remote_plugin_disabled"
+    status_code = 404
+
+
+class RemoteUnavailableError(PlatformError):
+    """远端连不上、超时或 TLS 失败——是**远端**的可用性问题，不是调用方写错了什么。"""
+
+    code = "remote_unavailable"
+    status_code = 502
+
+
+class RemoteToolFailedError(PlatformError):
+    """远端返回了非契约内容，或它自己的错误信封（``remote_unavailable`` 之外的失败）。
+
+    远端信封里的 ``code`` 会**原样透出**（见 ``plugins/remote.py``）：调用方只需要认识一套
+    词汇，而不是「平台的 code + 远端的 code」两套。``status_code`` 随之映射，认不出的
+    code 一律 502——远端内部的问题不该伪装成调用方的 4xx。
+    """
+
+    code = "remote_tool_failed"
+    status_code = 502
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "remote_tool_failed",
+        status_code: int = 502,
+        details: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message, details=details)
+        self.code = code
+        self.status_code = status_code
+
+
 def sanitize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """剥掉 pydantic 报错里的 ``ctx`` / ``input`` / ``url``。
 

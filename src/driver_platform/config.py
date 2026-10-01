@@ -1,10 +1,13 @@
 """配置外部化：可配项只从环境变量读，代码里不留第二份真相。
 
-八个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
+十一个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
 开哪些协议适配器（``DRIVER_PROTOCOLS``）、要不要凭证（``DRIVER_AUTH_MODE``）、
 钥匙清单与作用域（``DRIVER_API_KEYS``）、要不要暴露指标（``DRIVER_METRICS_ENABLED``）、
-日志级别与格式（``DRIVER_LOG_LEVEL`` / ``DRIVER_LOG_FORMAT``）。
-默认**一个插件都不装、一个协议都不开、不强制凭证、不暴露指标**：
+日志级别与格式（``DRIVER_LOG_LEVEL`` / ``DRIVER_LOG_FORMAT``）、启动期装载哪些远程插件
+（``DRIVER_REMOTE_PLUGINS``）、要不要开放远程插件管理接口（``DRIVER_REMOTE_PLUGIN_ENABLED``）、
+远程请求超时（``DRIVER_REMOTE_TIMEOUT``）。
+默认**一个插件都不装、一个协议都不开、不强制凭证、不暴露指标、一个远程插件都不连、
+管理接口关着**：
 起服务不会偷偷连库，不会默认把工具清单按某个 Agent 协议的形状暴露出去，
 也不会多开一个无鉴权的端点。日志默认``text``（人读）——它是本地开发的体验，
 而 JSON 行日志是为采集系统准备的，要的人会自己写。
@@ -16,6 +19,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,6 +31,8 @@ from driver_platform.observability.logging import (
     LOG_FORMAT_TEXT,
     LOG_FORMATS,
 )
+from driver_platform.plugins.remote import DEFAULT_TIMEOUT as DEFAULT_REMOTE_TIMEOUT
+from driver_platform.plugins.remote import normalize_base_url
 from driver_platform.security.keys import ENV_API_KEYS, ApiKey, parse_api_keys
 from driver_platform.security.policy import (
     AUTH_MODE_OFF,
@@ -41,6 +47,9 @@ ENV_PROTOCOLS = "DRIVER_PROTOCOLS"
 ENV_METRICS_ENABLED = "DRIVER_METRICS_ENABLED"
 ENV_LOG_LEVEL = "DRIVER_LOG_LEVEL"
 ENV_LOG_FORMAT = "DRIVER_LOG_FORMAT"
+ENV_REMOTE_PLUGINS = "DRIVER_REMOTE_PLUGINS"
+ENV_REMOTE_PLUGIN_ENABLED = "DRIVER_REMOTE_PLUGIN_ENABLED"
+ENV_REMOTE_TIMEOUT = "DRIVER_REMOTE_TIMEOUT"
 
 #: 允许出现在 ``DRIVER_PROTOCOLS`` 里的协议名，每个名字对应 ``protocols/`` 下的一个适配器。
 PROTOCOL_NAMES = frozenset({"mcp", "openai"})
@@ -60,6 +69,9 @@ class Settings:
     metrics_enabled: bool = False
     log_level: str = DEFAULT_LOG_LEVEL
     log_format: str = LOG_FORMAT_TEXT
+    remote_plugins: tuple[tuple[str, str], ...] = ()
+    remote_plugin_enabled: bool = False
+    remote_timeout: float = DEFAULT_REMOTE_TIMEOUT
 
     def __post_init__(self) -> None:
         if self.auth_mode not in AUTH_MODES:
@@ -77,6 +89,10 @@ class Settings:
         if self.log_level.upper() not in LEVEL_NAMES:
             raise InvalidConfigurationError(
                 f"未知日志级别：{self.log_level!r}；可用：{', '.join(LEVEL_NAMES)}"
+            )
+        if not math.isfinite(self.remote_timeout) or self.remote_timeout <= 0:
+            raise InvalidConfigurationError(
+                f"{ENV_REMOTE_TIMEOUT} 必须是大于 0 的秒数，收到：{self.remote_timeout!r}"
             )
 
     @classmethod
@@ -97,6 +113,11 @@ class Settings:
             metrics_enabled=_parse_bool(ENV_METRICS_ENABLED, environ.get(ENV_METRICS_ENABLED, "")),
             log_level=environ.get(ENV_LOG_LEVEL, "").strip() or DEFAULT_LOG_LEVEL,
             log_format=environ.get(ENV_LOG_FORMAT, "").strip().lower() or LOG_FORMAT_TEXT,
+            remote_plugins=_parse_remote_plugins(environ.get(ENV_REMOTE_PLUGINS, "")),
+            remote_plugin_enabled=_parse_bool(
+                ENV_REMOTE_PLUGIN_ENABLED, environ.get(ENV_REMOTE_PLUGIN_ENABLED, "")
+            ),
+            remote_timeout=_parse_timeout(environ.get(ENV_REMOTE_TIMEOUT, "")),
         )
 
 
@@ -120,3 +141,44 @@ def _parse_bool(name: str, raw: str) -> bool:
 def _split(raw: str) -> tuple[str, ...]:
     """逗号分隔的开关值：去空白、丢空项，保持书写顺序。"""
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_timeout(raw: str) -> float:
+    """远程请求超时：空值取默认；写错（非数字、非正、nan/inf）一律启动即失败。"""
+    value = raw.strip()
+    if not value:
+        return DEFAULT_REMOTE_TIMEOUT
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise InvalidConfigurationError(f"{ENV_REMOTE_TIMEOUT} 必须是秒数，收到：{raw!r}") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise InvalidConfigurationError(f"{ENV_REMOTE_TIMEOUT} 必须大于 0，收到：{raw!r}")
+    return timeout
+
+
+def _parse_remote_plugins(raw: str) -> tuple[tuple[str, str], ...]:
+    """解析 ``DRIVER_REMOTE_PLUGINS``：``plugin_id=base_url[, plugin_id=base_url]``。
+
+    只解析「叫什么、在哪」，不含任何代码或凭据；地址形状与重复 id 都在启动期拦下来，
+    免得等到某个请求打进来才发现远端连不上。
+    """
+    entries: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for part in _split(raw):
+        plugin_id, separator, url = part.partition("=")
+        name = plugin_id.strip()
+        if not separator or not name or not url.strip():
+            raise InvalidConfigurationError(
+                f"{ENV_REMOTE_PLUGINS} 的每一项都必须是 plugin_id=base_url，收到：{part!r}"
+            )
+        if name in seen:
+            raise InvalidConfigurationError(f"{ENV_REMOTE_PLUGINS} 里有重复的插件 id：{name}")
+        seen.add(name)
+        try:
+            entries.append((name, normalize_base_url(url)))
+        except ValueError as exc:
+            raise InvalidConfigurationError(
+                f"{ENV_REMOTE_PLUGINS} 里 {name} 的地址非法：{exc}"
+            ) from exc
+    return tuple(entries)

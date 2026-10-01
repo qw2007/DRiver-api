@@ -27,6 +27,13 @@ SCOPE_SEPARATOR = ":"
 SCOPE_DELIMITER = "|"
 _FORBIDDEN_IN_SECRET = (SCOPE_SEPARATOR, SCOPE_DELIMITER, ",")
 
+PLUGIN_ADMIN_SCOPE = "plugin_admin"
+"""插件管理作用域（``DRIVER_API_KEYS=key:plugin_admin``）。
+
+它**不是工具名**：带它的钥匙调不了任何工具（``allows()`` 只看工具名），只能注册/卸载
+远程插件。这正是「默认取严」想要的效果——管理权限不必顺带拿到全部工具的调用权。
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ApiKey:
@@ -51,6 +58,17 @@ class Principal:
     def allows(self, tool: str) -> bool:
         """可见性与权限共用这一个判定，杜绝「列表藏起来、调用却放行」。"""
         return self.scopes is None or tool in self.scopes
+
+    @property
+    def can_manage_plugins(self) -> bool:
+        """能不能改运行时（注册/卸载远程插件）。
+
+        全权钥匙（``*``，即 ``scopes is None``）可以——它本来就是「全部」；显式写了
+        ``plugin_admin`` 的也可以。注意开放模式（``DRIVER_AUTH_MODE=off``）下的匿名主体
+        是**全权**的（与调工具一致），所以管理接口的开关默认关：要开就先确认端口只对
+        可信网络开放，这条写进了阶段 6 的已知限制。
+        """
+        return self.scopes is None or PLUGIN_ADMIN_SCOPE in self.scopes
 
 
 ANONYMOUS_FINGERPRINT = "anonymous"

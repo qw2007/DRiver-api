@@ -15,6 +15,10 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "driver_platform"
 #: 允许 import mcp SDK 的文件（相对 SRC 的 posix 路径）——注意是「允许」，不是「必须」。
 MCP_IMPORTERS = {"protocols/mcp.py", "protocols/mcp_server.py"}
 
+#: 允许出网的实现：远程插件宿主是平台里**唯一**一个「替调用方发起 HTTP 请求」的地方。
+#: 它进核心依赖正是为了这件事；别处再 import httpx，说明又有人绕过这一层直接出网了。
+HTTPX_IMPORTERS = {"plugins/remote.py"}
+
 #: 与协议适配无关、因此绝不该被适配器 import 的第三方 SDK 根名。
 FORBIDDEN_IN_OPENAI_ADAPTER = {"mcp", "openai", "anthropic", "langchain"}
 
@@ -61,3 +65,14 @@ def test_core_does_not_depend_on_protocol_adapters() -> None:
     for path in core:
         modules = _imported_modules(path)
         assert not any(module.startswith("driver_platform.protocols.") for module in modules), path
+
+
+def test_only_the_remote_plugin_host_speaks_http() -> None:
+    """出网只有一处：远程插件宿主。核心服务要调远端，必须经过它（含超时与错误映射）。"""
+    importers = {
+        path.relative_to(SRC).as_posix()
+        for path in _source_files()
+        if any(module.split(".")[0] == "httpx" for module in _imported_modules(path))
+    }
+
+    assert importers == HTTPX_IMPORTERS

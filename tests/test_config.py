@@ -10,6 +10,9 @@ from driver_platform.config import (
     ENV_METRICS_ENABLED,
     ENV_PLUGINS,
     ENV_PROTOCOLS,
+    ENV_REMOTE_PLUGIN_ENABLED,
+    ENV_REMOTE_PLUGINS,
+    ENV_REMOTE_TIMEOUT,
     ENV_SQLITE_PATH,
     Settings,
 )
@@ -144,3 +147,67 @@ def test_direct_settings_construction_is_validated_too():
 
     with pytest.raises(InvalidConfigurationError):
         Settings(log_level="LOUD")
+
+
+def test_remote_plugins_are_off_by_default():
+    settings = Settings.from_env({})
+
+    assert settings.remote_plugins == ()
+    assert settings.remote_plugin_enabled is False
+    assert settings.remote_timeout == 5.0
+
+
+def test_env_parsing_reads_remote_plugins():
+    settings = Settings.from_env(
+        {
+            ENV_REMOTE_PLUGINS: " crm = https://crm.example.com/ , billing=http://127.0.0.1:9100 ",
+            ENV_REMOTE_PLUGIN_ENABLED: " on ",
+            ENV_REMOTE_TIMEOUT: "2.5",
+        }
+    )
+
+    # 尾斜杠在这里就被规整掉：远端地址只有一种写法，比较与拼接都简单
+    assert settings.remote_plugins == (
+        ("crm", "https://crm.example.com"),
+        ("billing", "http://127.0.0.1:9100"),
+    )
+    assert settings.remote_plugin_enabled is True
+    assert settings.remote_timeout == 2.5
+
+
+def test_remote_plugin_switch_uses_the_shared_boolean_vocabulary():
+    for raw in ("1", "true", "YES", " on "):
+        assert Settings.from_env({ENV_REMOTE_PLUGIN_ENABLED: raw}).remote_plugin_enabled is True
+    for raw in ("0", "false", "No", "off", ""):
+        assert Settings.from_env({ENV_REMOTE_PLUGIN_ENABLED: raw}).remote_plugin_enabled is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "crm",  # 少了 =
+        "=https://crm.example.com",  # 少了 id
+        "crm=",  # 少了地址
+        "crm=ftp://crm.example.com",  # 不是 http(s)
+        "crm=https://crm.example.com,crm=https://crm2.example.com",  # 重复 id
+    ],
+)
+def test_bad_remote_plugin_list_fails_at_startup(raw: str):
+    with pytest.raises(InvalidConfigurationError) as excinfo:
+        Settings.from_env({ENV_REMOTE_PLUGINS: raw})
+
+    assert ENV_REMOTE_PLUGINS in excinfo.value.message
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-1", "nan", "inf"])
+def test_bad_remote_timeout_fails_at_startup(raw: str):
+    with pytest.raises(InvalidConfigurationError) as excinfo:
+        Settings.from_env({ENV_REMOTE_TIMEOUT: raw})
+
+    assert ENV_REMOTE_TIMEOUT in excinfo.value.message
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("nan"), float("inf")])
+def test_remote_timeout_invariant_also_holds_for_direct_construction(timeout: float):
+    with pytest.raises(InvalidConfigurationError):
+        Settings(remote_timeout=timeout)

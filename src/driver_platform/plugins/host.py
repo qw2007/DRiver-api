@@ -81,6 +81,13 @@ class PluginHost:
                 self._registry.unregister(name)
         loaded.plugin.teardown()
 
+    def get(self, plugin_id: str) -> Plugin:
+        """按 id 取已装载的插件实例（管理接口用它判断「这是不是一个远程插件」）。"""
+        loaded = self._plugins.get(plugin_id)
+        if loaded is None:
+            raise PluginNotFoundError(f"未装载的插件：{plugin_id}")
+        return loaded.plugin
+
     def close(self) -> None:
         """逆序卸载全部插件——进程或应用退出时的收尾路径。
 

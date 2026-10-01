@@ -12,7 +12,7 @@
 | 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | ✅ 已完成 |
 | 4 | 安全权限 | 无凭证拒绝；越权被拦 | ✅ 已完成 |
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | ✅ 已完成 |
-| 6 | 远程插件 | 远程注册可调用；下线后工具自动不可用 | 待开始 |
+| 6 | 远程插件 | 远程注册可调用；下线后工具自动不可用 | ✅ 已完成 |
 | 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | 待开始 |
 | 8 | 生产加固 | 多副本；滚动更新不中断；旧版 Agent 兼容 | 待开始 |
 
@@ -116,22 +116,44 @@ docker run -d --name driver-grafana -p 3000:3000 grafana/grafana
 
 容器里的 Prometheus 抓的是 `host.docker.internal:8000`，所以这个场景下 uvicorn 必须绑 `0.0.0.0`；绑 `127.0.0.1` 时容器侧连不上（本机实测踩过）。
 
+### 接远程插件（阶段 6）
+
+远端只要实现两个 HTTP 端点（契约见[阶段 6 说明](docs/stages/stage-6.md)），就能把自己的工具挂到平台上来；管理接口**默认关**，且与工具调用**分权**（`plugin_admin` 不是工具名）：
+
+```bash
+.venv/Scripts/python examples/remote_echo_service.py --port 9100 &   # 仓库自带的示例远端
+
+DRIVER_REMOTE_PLUGIN_ENABLED=1 DRIVER_AUTH_MODE=required \
+DRIVER_API_KEYS='admin-key:plugin_admin,all-key' \
+  .venv/Scripts/python -m uvicorn driver_platform.main:app --host 0.0.0.0 --port 8000
+
+# 注册 → 调用 → 下线（下线后工具立刻从 /v1/tools 消失、调用变 404）
+curl -X POST http://127.0.0.1:8000/v1/plugins/remote -H "X-API-Key: admin-key" \
+  -H "content-type: application/json" -d '{"plugin_id":"echo_farm","base_url":"http://127.0.0.1:9100"}'
+curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "X-API-Key: all-key" \
+  -H "content-type: application/json" -d '{"tool":"remote_echo","arguments":{"message":"hi"}}'
+curl -X DELETE http://127.0.0.1:8000/v1/plugins/remote/echo_farm -H "X-API-Key: admin-key" -i
+```
+
+`DRIVER_REMOTE_PLUGINS='id=base_url'` 可以在**启动期**装载远程插件；此时远端连不上进程就起不来——这是刻意的（宁可起不来，也不要带着一半坏工具对外服务），代价是部署编排里必须安排启动顺序。
+
 ## 目录结构
 
 ```
 src/driver_platform/
   main.py               create_app()：装配配置、注册表、插件宿主、错误处理、路由
-  config.py             Settings.from_env()：插件 / SQLite 路径 / 协议 / 鉴权模式 / 钥匙清单
+  config.py             Settings.from_env()：插件 / SQLite 路径 / 协议 / 鉴权模式 / 钥匙清单 / 远程插件与超时
   bootstrap.py          create_registry_and_host()：内置工具 + 按配置装载插件
   errors.py             PlatformError 体系 + 统一错误信封
   security/             凭证与作用域：keys（解析与主体）、policy（authenticate + 可见性）、http（请求头 → 依赖）
   api/tools.py          GET /v1/tools、POST /v1/tools/execute
-  api/plugins.py        GET /v1/plugins
+  api/plugins.py        GET /v1/plugins、POST /v1/plugins/remote、DELETE /v1/plugins/remote/{plugin_id}
   tools/                Tool 契约、ToolRegistry、executor（HTTP 与 MCP 共用执行路径）、echo 内置工具
-  plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件
+  plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件、remote（远程插件与 HTTP 客户端）
   protocols/            协议适配器：__init__（协议开关 + 路由装配）、openai_schema（纯翻译）、mcp（stdio 服务端）、mcp_server（进程入口）、routes
   observability/        request_id 上下文、四个指标、结构化日志（text/json）、ASGI 中间件、/metrics 路由
-tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限/可观测性 测试
+examples/               可运行的远端插件参考实现（remote_echo_service.py，供本机人工验收）
+tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限/可观测性/远程插件 测试
 .github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest（Python 3.14）
 Dockerfile              运行镜像（阶段 7 才验证）
 docs/                   阶段设计说明（stages/）+ 任务书 + 变更日志 + 环境与工具手册
@@ -147,11 +169,12 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 - [阶段 3：协议适配层](docs/stages/stage-3.md) —— MCP stdio 服务端、OpenAI Schema 导出、协议开关与错误映射
 - [阶段 4：安全权限](docs/stages/stage-4.md) —— API Key 与工具作用域、401/403 语义、凭证来源（HTTP 头 / 环境变量）
 - [阶段 5：可观测性](docs/stages/stage-5.md) —— 四个指标与标签取值约定、`/metrics` 的开关与暴露面、日志字段契约、request_id 的贯穿路径
+- [阶段 6：远程插件](docs/stages/stage-6.md) —— 远端契约 1.0（`/manifest` 与 `/execute`）、管理接口的三道门、错误码映射、同步/异步的边界
 
 项目级文档：
 
 - [任务书：整体目标与 9 阶段验收标准](docs/task-brief.md)
-- [变更日志：阶段 0–5 的逐阶段实现记录与验收证据](CHANGELOG.md)
+- [变更日志：阶段 0–6 的逐阶段实现记录与验收证据](CHANGELOG.md)
 - [环境与工具手册：本机工具链、提权清单、沙箱约束与 GitHub/Docker 直连解法](docs/environment.md)
 
 ## 已知限制
@@ -162,4 +185,5 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 - MCP 侧只做 stdio 与 tools（无 HTTP/SSE、无 resources/prompts、一次一个客户端），协议版本跟随 SDK，`output_model` 即协议输出契约，细节见阶段 3 说明的「已知限制」。
 - 鉴权默认关且只到「工具名」这一层：不配 `DRIVER_AUTH_MODE=required` 就是开放的，密钥明文放在环境变量里，没有速率限制、配额、审计与吊销，细节见阶段 4 说明的「已知限制」。
 - 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零，多副本各算各的）；`X-Request-ID` 只在**本进程内**贯穿（没有 traceparent），日志不记请求体，直方图用默认桶（5 ms–10 s），细节见阶段 5 说明的「已知限制」。
+- 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，远端地址是单点，每次调用新建 HTTP 客户端（不复用连接池），细节见阶段 6 说明的「已知限制」。
 - 本机（Windows + DSH 沙箱）有三处环境级坑：pip / 全量 pytest / docker / **联网 Git 操作**需提权，GitHub 需 `sslBackend=schannel` 直连，Docker 需镜像加速——**这些只是本机噪声，不影响 CI**，逐条解法见[环境与工具手册](docs/environment.md)。
