@@ -1,6 +1,6 @@
 # 变更日志（CHANGELOG）
 
-驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–5 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
+驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–6 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
 
 - 整体任务目标见 [`docs/task-brief.md`](docs/task-brief.md)；
 - 每阶段的设计说明（技术选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署方案）见 [`docs/stages/`](docs/stages/)。
@@ -15,6 +15,7 @@
 | 3 协议适配层 | `6ee7632` | 2026-09-30 20:49 | 21 files, +1018 / −47 | MCP 客户端 list/call `search_database`；OpenAI Schema 导出 |
 | 4 安全权限 | `e9750c1` | 2026-09-30 20:57 | 18 files, +912 / −33 | 无凭证 401；越权 403 |
 | 5 可观测性 | `80cd902` | 2026-10-01 | 24 files, +1925 / −48 | Grafana 看 QPS/延迟/错误率；日志按 `request_id` 追全链路 |
+| 6 远程插件 | `a2a0abc` | 2026-10-01 | 17 files, +1824 / −17 | 远程注册即可调用；`DELETE` 下线后工具自动不可用 |
 | 文档（任务书 + 变更日志） | `783b5c6` | 2026-10-01 | 4 files, +409 / −2 | `docs/task-brief.md` + `CHANGELOG.md` + README 入口 |
 | — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 
@@ -135,6 +136,31 @@
 
 ---
 
+## 阶段 6：远程插件（`a2a0abc`，2026-10-01）
+
+**目标**：远程注册的插件可被调用，下线后工具自动不可用。
+
+**交付物**：`plugins/remote.py`（远端契约 1.0 的客户端与工具适配）；`api/plugins.py` 增 `POST /v1/plugins/remote` 与 `DELETE /v1/plugins/remote/{plugin_id}`；`errors.py` 增 3 个错误码；`security/keys.py` 增 `plugin_admin` 作用域与 `can_manage_plugins`；`config.py` 增 `DRIVER_REMOTE_PLUGIN_ENABLED` / `DRIVER_REMOTE_PLUGINS` / `DRIVER_REMOTE_TIMEOUT`；`plugins/host.py` 增 `get()`；`bootstrap.py` 装载启动期远程插件；`httpx` 进核心依赖；`examples/remote_echo_service.py`（参考远端）；`tests/test_remote_plugin.py`（24 例）、`tests/test_remote_api.py`（20 例）、`tests/test_config.py` +7 组、`tests/test_protocol_isolation.py` 增 httpx 守卫；`docs/stages/stage-6.md`。README 的路线表、目录结构、用法与已知限制同步更新。
+
+**关键决策与理由**
+
+- **远端只要求 HTTP + JSON**：任何语言、任何框架只要实现 `GET /manifest` 与 `POST /execute` 就能接入，我们不必为每种语言发 SDK；代价是超时、错误映射要自己定，所以把这份契约钉成 1.0。
+- **拉清单（平台拉）而不是推工具（远端上报）**：装载那一刻就知道工具身份，拿不到清单就不装载、发现冲突就整体回滚——失败发生在注册这一步，而不是第一次调用时。
+- **不复刻 JSON Schema 校验器**：平台把远端的 `input_schema` 原样透出，参数由调用方按远端 schema 生成、远端自己校验，平台只把远端的错误信封原样透出。两份校验器必然漂移，而「谁是参数的真话」只能有一个答案：工具的提供方。
+- **装载期同步、调用期异步**：`Plugin.setup()` / `teardown()` 是阶段 2 定下的同步接口（改异步是破坏性变更），所以拉清单用同步 `httpx.Client`；工具调用在事件循环里，用 `AsyncClient`，且**每次调用新建一个**——同步的 `teardown()` 关不掉它，代价是不复用连接池（记入已知限制）。
+- **管理接口默认关，且与工具调用分权**：远程插件等于「运行时可注册的可执行入口」，默认关是「特性开关默认关」的落地；`plugin_admin` 不是工具名（带它的钥匙调不了任何工具），只有工具作用域的钥匙也管理不了插件。
+- **管理端点始终注册，关着时 404 `remote_plugin_disabled`**：与 `/metrics` 的「关就不注册路由」刻意分歧——管理接口的调用方是程序，FastAPI 默认的 `{"detail":"Not Found"}` 会被读成 URL 写错，而 404 + 我们的信封能直接说清「要设哪个开关」。
+- **卸载只认远程插件**：本地插件仍只由配置决定，避免「用远程接口管本地插件」——那样一份配置就有了两个真话。
+- **远端错误码原样透出**：`code` 保留远端原文（`invalid_arguments` / `tool_not_found` / `permission_denied`），只做状态码映射（422 / 404 / 403，其余 502），所以调用方看到的词汇与平台自己抛的错误是同一套。
+- **结果必须是 JSON 对象**：让「成功」与「失败」在类型上不会混；平台不二次校验、不改形状（`output_mode=None` 透传）。
+- **启动期装载失败 = 进程起不来**：宁可起不来，也不要带着一半坏工具对外服务；代价是部署编排里必须安排启动顺序。
+
+**验收证据**：门禁全绿——`pytest` **241 passed**（0 failed / 0 error）、覆盖率 **95%**（1248 语句 / 68 未覆盖，其中 `plugins/remote.py` 97%、`api/plugins.py` 98%），`ruff check .` All checks passed，`ruff format --check src tests examples` 55 files，`mypy src` 34 source files。真实 HTTP 全程（示例远端 9100 + 平台 8000）：无 `plugin_admin` 作用域的钥匙 **403**（details 写明需要的 scope）→ `admin-key` 注册 **201** → `GET /v1/tools` 里 `remote_echo` 的 schema 与远端清单逐字一致 → 调用 **200** `{"echo":"hi","times":3,"repeated":["hi","hi","hi"]}` → `times=99` 由远端拦下 **422** → `DELETE` **204** → 清单里消失、调用 **404 `tool_not_found`** → 开关关时 **404 `remote_plugin_disabled`**。与阶段 5 的接缝：远端工具调用照样产出 `event=tool_call` 日志（`request_id` 与响应头同值）与 `driver_tool_calls_total{tool="remote_echo"}`。逐条证据见[阶段 6 说明](docs/stages/stage-6.md)的「验收证据」。
+
+**已知限制**：清单只在装载时拉一次（远端改 schema 需重新注册）；无重试、熔断、退避（远端抖动直接是 502）；远端是可执行信任边界，无签名与来源校验；平台照抄远端 `input_schema`，远端写错则调用方按错的生成；超时是单次请求超时；每次调用新建 HTTP 客户端（不复用连接池）；`base_url` 是单点；下线不通知远端；本地插件仍无 HTTP 管理接口。
+
+---
+
 ## 工具链与环境约束（非阶段交付，2026-10-01）
 
 **目标**：为阶段 5 备齐工具，并把本机开发环境的坑一次性固化下来——**不改变任何对外行为**。
@@ -158,10 +184,10 @@
 
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5，外加 2 次文档提交与 1 次工具链与环境提交，共 9 个提交、68 个受版本控制的文件；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 51 files already formatted；`mypy src` → Success: no issues found in 33 source files；`bandit -r src -q` → exit 0；`pip-audit` → No known vulnerabilities found；`pytest` → 167 passed，覆盖率 94%；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6，外加 4 次文档提交、1 次工具链与环境提交与 1 次任务状态更新，共 13 个提交、73 个受版本控制的文件；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests examples` → 55 files already formatted；`mypy src` → Success: no issues found in 34 source files；`pytest` → **241 passed**，覆盖率 **95%**（`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
-- **下一步**：阶段 6「远程插件」—— 目标是远程注册的插件可被调用、下线后工具自动不可用。现有插件宿主（`plugins/host.py` + `Plugin` 契约）就是为这一步留的口子，`/v1/plugins` 目前只读；阶段 7 的 Compose 会把 Prometheus / Grafana 与本服务放进同一份部署描述（`docs/observability/` 里现在这套是给本机联调用的，届时换成服务名与镜像 digest）。
+- **下一步**：阶段 7「部署交付」—— `docker compose up` 起全平台（本服务 + SQLite 插件 + Prometheus + Grafana），CI/CD 通过；`docs/observability/` 里现在这套 Prometheus 配置是给本机联调用的，届时换成服务名（`driver-platform:8000`）与手册 §2 记录的镜像 digest。
 
 ## 已知限制（汇总）
 
@@ -171,4 +197,5 @@
 4. MCP 侧只做 stdio 与 tools，协议版本跟随 SDK，详见阶段 3 说明；
 5. 鉴权默认关且只到工具名粒度，无速率限制/配额/审计/吊销，详见阶段 4 说明；
 6. 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零），`request_id` 只在本进程内贯穿（无 traceparent），访问日志不记请求体，详见阶段 5 说明；
-7. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
+7. 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，`base_url` 是单点且每次调用新建 HTTP 客户端，详见阶段 6 说明；
+8. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
