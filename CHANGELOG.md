@@ -1,6 +1,6 @@
 # 变更日志（CHANGELOG）
 
-驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**。
+驱动平台自阶段 0 起的完整实现日志。每条对应一个提交，记录**目标 / 交付物 / 关键决策与理由 / 验收证据**；阶段 0–4 之外另有 1 条非阶段提交（工具链与环境约束，见文末）。
 
 - 整体任务目标见 [`docs/task-brief.md`](docs/task-brief.md)；
 - 每阶段的设计说明（技术选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署方案）见 [`docs/stages/`](docs/stages/)。
@@ -14,6 +14,8 @@
 | 2 插件系统 + 数据库插件 | `5efc1c0` | 2026-09-30 20:36 | 23 files, +1296 / −36 | 工具表出现 `search_database`；插件可装载/卸载；结构化结果 |
 | 3 协议适配层 | `6ee7632` | 2026-09-30 20:49 | 21 files, +1018 / −47 | MCP 客户端 list/call `search_database`；OpenAI Schema 导出 |
 | 4 安全权限 | `e9750c1` | 2026-09-30 20:57 | 18 files, +912 / −33 | 无凭证 401；越权 403 |
+| 文档（任务书 + 变更日志） | `783b5c6` | 2026-10-01 | 4 files, +409 / −2 | `docs/task-brief.md` + `CHANGELOG.md` + README 入口 |
+| — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 
 ---
 
@@ -110,12 +112,33 @@
 
 ---
 
-## 当前状态（截至 `e9750c1`）
+## 工具链与环境约束（非阶段交付，2026-10-01）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4，共 5 个提交，51 个受版本控制的文件；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`pytest` → 98 passed；
+**目标**：为阶段 5 备齐工具，并把本机开发环境的坑一次性固化下来——**不改变任何对外行为**。
+
+**交付物**：`pyproject.toml`（新增依赖）、`docs/environment.md`（新增：环境与工具手册）、`README.md`（项目级文档入口 + 检查命令）、`CHANGELOG.md`（本节）、`src/driver_platform/plugins/sqlite.py`（安全扫描误报就地标注）、`.gitignore`（覆盖率 / pip-audit 缓存 / pytest 残留）。
+
+**关键决策与理由**
+
+- **只补真正要用的**：运行时加 `prometheus-client`（阶段 5 的 `/metrics`）；dev 加 `pytest-cov`、`bandit`、`pip-audit`（覆盖率 + 两项安全门禁）。`uv` / `poetry` / `pre-commit` / `kind` / `helm` / 各类数据库 CLI **一律不装** —— 没有对应阶段需求，装了只是维护面。
+- **安全检查进常规门禁**：`bandit -r src` 与 `pip-audit --cache-dir .pip-audit-cache` 写进 README 检查命令。`sqlite.py` 初报 2 条 `B608`（SQL 注入）**确认为误报**：表名与列名都先过白名单校验（`self._tables()` / `available`），拼进 SQL 的标识符经 `_quote_identifier()` 双引号包裹并转义 `"`，所有**值**一律 `?` 绑定，库以 `mode=ro` 只读打开 → 就地 `# nosec B608` 并写明理由，比全局跳过 B608 更窄、也不掩盖将来的真问题。
+- **GitHub 直连而不是走镜像**：`~/.gitconfig` 原有 `url."https://ghproxy.net/https://github.com/".insteadOf`，读能用但 push 必被 GitHub 拒（`Invalid username or token`）。本机 TLS 卡在**吊销检查**而非证书链，故改为 `http.sslBackend=schannel` + `http.schannelCheckRevoke=false` 并移除镜像改写；备份留在 `~/.gitconfig.bak-20261001-120108`。
+- **gh / jq 不走 Chocolatey**：非提权进程写不了 `C:\ProgramData\chocolatey\lib-bad`（UAC 过滤令牌），改为从 GitHub Releases 解压到 `D:\DSh\tools\bin` 并追加**用户** PATH（不需要管理员）。
+- **Docker 镜像走国内加速**：`~/.docker/daemon.json` 增 `registry-mirrors` 后拉取正常（直连 `registry-1.docker.io` 被 reset）。
+- **两个镜像要钉摘要**：`prom/prometheus` 与 `grafana/grafana` 目前是 `latest`，阶段 5 组 Compose 时必须换成手册 §2 记录的 digest，否则「可复现部署」不成立。
+
+**验收证据**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip_audit --cache-dir .pip-audit-cache --progress-spinner off` → No known vulnerabilities found；提权全量 `pytest -p no:cacheprovider` → 98 passed；`git ls-remote origin` → `783b5c6 refs/heads/master`（exit 0，未再传任何 `-c` 参数）。
+
+**已知限制**：以上修正都只作用于**本机**；CI 不需要提权、不需要 schannel、不需要镜像加速。受限模式下带 `tmp_path` 的 pytest 仍有 30 个用例失败，根因（`0o700` 目录的 DACL 对受限令牌 deny-only）与提权清单一并写在[环境与工具手册](docs/environment.md)。
+
+---
+
+## 当前状态（截至最新提交）
+
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4，外加 1 次工具链与环境提交，共 7 个提交、54 个受版本控制的文件；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests` → 40 files already formatted；`mypy src` → Success: no issues found in 27 source files；`bandit -r src -q` → exit 0；`pip-audit` → No known vulnerabilities found；`pytest` → 98 passed；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
-- **下一步**：阶段 5「可观测性」—— 目标是 Grafana 看 QPS/延迟/错误率、日志按 `request_id` 追全链路。本机没有 Docker/Grafana，计划先做**进程内指标 + 结构化 JSON 日志 + `request_id` 贯穿 + `/metrics` 端点**，Grafana 面板留到阶段 7 的 Compose 一起验（该折衷待确认）。
+- **下一步**：阶段 5「可观测性」—— 目标是 Grafana 看 QPS/延迟/错误率、日志按 `request_id` 追全链路。本机 Docker 与 Prometheus / Grafana 镜像已就绪（[环境手册](docs/environment.md) §2），**面板可以在本机真验**；仍建议与阶段 7 的 Compose 合并复验一次，避免出现两套部署描述。
 
 ## 已知限制（汇总）
 
@@ -124,4 +147,4 @@
 3. SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，详见阶段 2 说明；
 4. MCP 侧只做 stdio 与 tools，协议版本跟随 SDK，详见阶段 3 说明；
 5. 鉴权默认关且只到工具名粒度，无速率限制/配额/审计/吊销，详见阶段 4 说明；
-6. **本机开发环境的沙箱限制（不影响 CI）**：受限进程下运行带 `tmp_path` 的 pytest 需要提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，其 DACL 不含受限令牌的身份，导致 `PermissionError [WinError 5]`；同理，在本机验证 MCP stdio 端到端（匿名管道）也需要提权。CI（ubuntu-latest）不受影响。
+6. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。

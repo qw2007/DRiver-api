@@ -10,7 +10,7 @@
 | 1 | 核心服务 + 工具注册 | `execute` 统一入口；echo 工具；非法参数 → 422 | ✅ 已完成 |
 | 2 | 插件系统 + 数据库插件 | 工具列表出现 `search_database`；可注册/注销；结构化结果 | ✅ 已完成 |
 | 3 | 协议适配层 | MCP 客户端能 list/call `search_database`；curl 返回 OpenAI 工具 JSON Schema | ✅ 已完成 |
-| 4 | 安全权限 | 无凭证拒绝；越权被拦 | ✅ 本阶段 |
+| 4 | 安全权限 | 无凭证拒绝；越权被拦 | ✅ 已完成 |
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | 待开始 |
 | 6 | 远程插件 | 远程注册可调用；下线后工具自动不可用 | 待开始 |
 | 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | 待开始 |
@@ -35,10 +35,13 @@ curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: applicatio
 检查：
 
 ```bash
-.venv/Scripts/python -m pytest
+.venv/Scripts/python -m pytest                      # 本机沙箱下需提权，原因见 docs/environment.md
+.venv/Scripts/python -m pytest --cov=driver_platform --cov-report=term-missing
 .venv/Scripts/python -m ruff check .
 .venv/Scripts/python -m ruff format --check src tests
 .venv/Scripts/python -m mypy
+.venv/Scripts/python -m bandit -r src -q
+.venv/Scripts/python -m pip_audit --cache-dir .pip-audit-cache --progress-spinner off
 ```
 
 ### 带数据库插件启动（阶段 2）
@@ -106,6 +109,7 @@ src/driver_platform/
 tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限 测试
 .github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest（Python 3.14）
 Dockerfile              运行镜像（阶段 7 才验证）
+docs/                   阶段设计说明（stages/）+ 任务书 + 变更日志 + 环境与工具手册
 ```
 
 ## 阶段设计说明
@@ -122,6 +126,7 @@ Dockerfile              运行镜像（阶段 7 才验证）
 
 - [任务书：整体目标与 9 阶段验收标准](docs/task-brief.md)
 - [变更日志：阶段 0–4 的逐阶段实现记录与验收证据](CHANGELOG.md)
+- [环境与工具手册：本机工具链、提权清单、沙箱约束与 GitHub/Docker 直连解法](docs/environment.md)
 
 ## 已知限制
 
@@ -130,3 +135,4 @@ Dockerfile              运行镜像（阶段 7 才验证）
 - SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，细节见阶段 2 说明的「已知限制」。
 - MCP 侧只做 stdio 与 tools（无 HTTP/SSE、无 resources/prompts、一次一个客户端），协议版本跟随 SDK，`output_model` 即协议输出契约，细节见阶段 3 说明的「已知限制」。
 - 鉴权默认关且只到「工具名」这一层：不配 `DRIVER_AUTH_MODE=required` 就是开放的，密钥明文放在环境变量里，没有速率限制、配额、审计与吊销，细节见阶段 4 说明的「已知限制」。
+- 本机（Windows + DSH 沙箱）有三处环境级坑：pip / 全量 pytest / docker / **联网 Git 操作**需提权，GitHub 需 `sslBackend=schannel` 直连，Docker 需镜像加速——**这些只是本机噪声，不影响 CI**，逐条解法见[环境与工具手册](docs/environment.md)。

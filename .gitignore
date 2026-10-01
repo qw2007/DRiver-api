@@ -8,3 +8,9 @@ __pycache__/
 .scratch/
 .tmp/
 .smoke/
+.coverage
+.coverage.*
+htmlcov/
+.pip-audit-cache/
+pytest-cache-files-*/
+pytest-of-*/

@@ -117,12 +117,16 @@ class SearchDatabaseTool(Tool[SearchDatabaseInput, SearchDatabaseOutput]):
 
         table = _quote_identifier(arguments.table)
         select_clause = ", ".join(_quote_identifier(name) for name in columns)
+        # bandit 的 B608 在这两处是误报：进入 SQL 文本的只有「已按真实 schema 校验过、
+        # 且被 _quote_identifier 转义过的标识符」，所有值都由 ? 占位符绑定，用户输入进不了 SQL。
+        select_sql = f"SELECT {select_clause} FROM {table}{where_clause} LIMIT ? OFFSET ?"  # nosec B608
         rows = self._connection.execute(
-            f"SELECT {select_clause} FROM {table}{where_clause} LIMIT ? OFFSET ?",
+            select_sql,
             [*parameters, arguments.limit, arguments.offset],
         ).fetchall()
+        count_sql = f"SELECT COUNT(*) FROM {table}{where_clause}"  # nosec B608
         total = self._connection.execute(
-            f"SELECT COUNT(*) FROM {table}{where_clause}",
+            count_sql,
             parameters,
         ).fetchone()[0]
 
