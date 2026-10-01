@@ -1,0 +1,15 @@
+# 阶段 7：Grafana 数据源，由 provisioning 在启动时装配（不需要手工点）。
+#
+# uid 必须与 docs/observability/grafana-dashboard.json 里各面板引用的 uid 一致，
+# 否则面板会显示 "Datasource prom-main was not found"——tests/test_deploy_config.py 会守住这条。
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prom-main
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

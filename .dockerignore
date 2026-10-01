@@ -1,0 +1,30 @@
+# 阶段 7：构建上下文收窄。
+#
+# 没有这个文件，docker build 会把 .venv（数百 MB）和 .git 全量发给守护进程——
+# 慢，而且把本机路径、依赖版本、历史提交一起塞进构建缓存。
+# 镜像里只需要：pyproject.toml、README.md、src/、deploy/（入口脚本 + 演示库种子）。
+
+.venv/
+.git/
+.github/
+.tmp/
+.scratch/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.pip-audit-cache/
+pytest-of-*/
+junit*.xml
+tests/
+docs/
+examples/
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore

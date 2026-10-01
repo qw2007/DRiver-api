@@ -1,0 +1,18 @@
+# 阶段 7：告诉 Grafana 去哪个目录读面板（JSON 文件形式）。
+#
+# 面板文件由 docker-compose.yml 从 docs/observability/grafana-dashboard.json 只读挂载进来，
+# 所以仓库里只有一份面板定义。allowUiUpdates=false：容器里的改动重启就没了，
+# 想长期改就改仓库里的 JSON，这也符合「文档随代码同步」。
+
+apiVersion: 1
+
+providers:
+  - name: driver-platform
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

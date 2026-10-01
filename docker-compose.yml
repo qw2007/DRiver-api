@@ -1,0 +1,93 @@
+# 阶段 7：一条命令起全平台（驱动平台 + Prometheus + Grafana）。
+#
+#   docker compose up -d --build          # 起三个服务
+#   curl http://localhost:8000/health     # {"status":"ok"}
+#   浏览器打开 http://localhost:3000      # admin / admin，数据源与面板已自动装配
+#   docker compose down -v                # 停掉并删掉数据卷
+#
+# 每个服务的环境变量、健康检查与取舍见 docs/stages/stage-7.md。
+# 注意：本机开发（uvicorn 跑在宿主上）用的抓取配置是 docs/observability/prometheus.yml，
+# 两者只差抓取目标（host.docker.internal:8000 ↔ driver-platform:8000）。
+
+name: driver-platform
+
+services:
+  driver-platform:
+    build:
+      context: .
+    image: driver-platform:0.0.0
+    environment:
+      # —— 插件与工具（阶段 2）——
+      DRIVER_PLUGINS: sqlite
+      DRIVER_SQLITE_PATH: /data/demo.db
+      # 演示用开关：首次启动时种一份可查的演示库（deploy/demo/seed_demo_db.py）。
+      # 生产请设为 0，并把 /data 换成自己挂进来的只读库。
+      DRIVER_SEED_DEMO_DB: "1"
+      # —— 可观测性（阶段 5）——
+      DRIVER_METRICS_ENABLED: "1"
+      DRIVER_LOG_FORMAT: json
+      # —— 鉴权（阶段 4）：下面这对钥匙是演示用的，生产请改用 secrets 注入 ——
+      DRIVER_AUTH_MODE: required
+      DRIVER_API_KEYS: "${DRIVER_API_KEYS:-admin-key:plugin_admin,read-key:search_database|echo}"
+    volumes:
+      - data:/data
+    ports:
+      - "${DRIVER_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  prometheus:
+    # 钉摘要而不是 latest：可复现部署要求「同一份 compose 起同一个镜像」。
+    image: prom/prometheus@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    depends_on:
+      driver-platform:
+        condition: service_healthy
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+    depends_on:
+      - prometheus
+    environment:
+      # 演示凭据；生产请用 secrets，并关掉匿名访问（默认就是关的）。
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      # 关掉外呼：容器里既不需要，本机首次启动也会因此慢很多。
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Grafana 13 默认在启动时把自带插件（含 prometheus 数据源）升级到最新版：先停掉旧进程，
+      # 再从 storage.googleapis.com 下载新版本。离线/受限网络下下载失败，自带的那份会被一起注销，
+      # 表现为 /api/plugins/prometheus 404、面板报 "Datasource not found"（本机实测见
+      # docs/stages/stage-7.md 验收证据）。升级 Grafana 请改上面的镜像摘要，不要在运行时自动更新。
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      # 面板只有一份真话：阶段 5 那份 JSON 既供手工导入，也供 provisioning 直接挂载。
+      - ./docs/observability/grafana-dashboard.json:/var/lib/grafana/dashboards/driver-platform-overview.json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  data:
+  prometheus-data:
+  grafana-data:

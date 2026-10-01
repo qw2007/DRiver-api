@@ -27,6 +27,7 @@ dev = [
     "mypy>=1.11",
     "bandit>=1.7",  # 安全静态扫描（权限/鉴权代码回归）
     "pip-audit>=2.7",  # 依赖漏洞审计（阶段 8 供应链加固）
+    "PyYAML>=6",  # 阶段 7：测试要解析 docker-compose.yml 与 Grafana provisioning
     "mcp>=1.20,<2",  # 测试用官方客户端做协议一致性验证
 ]
 
@@ -43,7 +44,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "deploy"]
 
 [tool.mypy]
 python_version = "3.11"

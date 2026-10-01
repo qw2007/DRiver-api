@@ -14,6 +14,51 @@ jobs:
           python-version: "3.14"
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
-      - run: ruff format --check src tests
+      - run: ruff format --check src tests deploy examples
       - run: mypy
       - run: pytest
+
+  # 阶段 7：部署交付的 CI 部分。先静态校验部署描述，再把镜像真的建起来跑一次冒烟——
+  # 「compose 能起」不能只在开发机上验证过一次就算数。
+  # 这里只起 driver-platform：拉 Prometheus / Grafana 两个第三方镜像（1.94 GB）对冒烟没有增益。
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 compose 与 provisioning 描述
+        run: docker compose config --quiet
+
+      - name: 构建镜像
+        run: docker compose build driver-platform
+
+      - name: 起服务
+        run: docker compose up -d --no-deps driver-platform
+
+      - name: 等健康检查通过
+        run: |
+          container="$(docker compose ps -q driver-platform)"
+          for _ in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
+            echo "health=$status"
+            if [ "$status" = "healthy" ]; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs driver-platform
+          exit 1
+
+      - name: 冒烟：/health 与 /metrics
+        run: |
+          curl -fsS http://localhost:8000/health
+          curl -fsS http://localhost:8000/metrics | grep -q 'driver_http_requests_total'
+
+      - name: 冒烟：按演示库调用 search_database
+        run: |
+          curl -fsS -X POST http://localhost:8000/v1/tools/execute \
+            -H 'Content-Type: application/json' \
+            -H 'X-API-Key: read-key' \
+            -d '{"tool":"search_database","arguments":{"table":"customers","filters":{"city":"上海"},"limit":2}}'
+
+      - name: 收尾
+        if: always()
+        run: docker compose down -v

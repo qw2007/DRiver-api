@@ -1,0 +1,17 @@
+# 阶段 7：compose 里的 Prometheus 抓取配置。
+#
+# 与 docs/observability/prometheus.yml（本机开发用）只差抓取目标：
+# 这里用 compose 的服务名，容器之间在同一个默认网络里按名字互通；
+# 服务名由 compose 提供 DNS，rename 服务就会断抓取，所以两处一起改。
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: driver-platform
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["driver-platform:8000"]
+        labels:
+          instance: compose
