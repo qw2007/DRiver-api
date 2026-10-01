@@ -1,0 +1,19 @@
+# 阶段 5 本机验证用的最小抓取配置：只抓驱动平台自己。
+#
+# 用法（宿主机上 uvicorn 跑在 8000，且 DRIVER_METRICS_ENABLED=1）：
+#   docker run -d --name driver-prom -p 9090:9090 \
+#     -v "$PWD/docs/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" prom/prometheus
+#
+# 阶段 7 的 compose 会把它换成服务名（driver-platform:8000），而不是 host.docker.internal。
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: driver-platform
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+        labels:
+          instance: local

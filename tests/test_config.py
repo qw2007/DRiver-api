@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from driver_platform.config import ENV_PLUGINS, ENV_PROTOCOLS, ENV_SQLITE_PATH, Settings
+from driver_platform.config import (
+    ENV_LOG_FORMAT,
+    ENV_LOG_LEVEL,
+    ENV_METRICS_ENABLED,
+    ENV_PLUGINS,
+    ENV_PROTOCOLS,
+    ENV_SQLITE_PATH,
+    Settings,
+)
 from driver_platform.errors import (
     InvalidConfigurationError,
     UnknownPluginError,
@@ -76,3 +84,63 @@ def test_unknown_protocol_fails_at_startup():
 
     assert "langchain" in str(excinfo.value)
     assert "mcp" in str(excinfo.value)  # 错误信息里给出可用协议
+
+
+# --- 阶段 5：可观测性开关 ------------------------------------------------------
+
+
+def test_metrics_default_to_disabled():
+    """特性开关默认关：默认实例连 /metrics 这个端点都不存在（它是无鉴权的）。"""
+    assert Settings.from_env({}).metrics_enabled is False
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "YES", " on "])
+def test_metrics_truthy_spellings(raw):
+    assert Settings.from_env({ENV_METRICS_ENABLED: raw}).metrics_enabled is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "No", "off", ""])
+def test_metrics_falsy_spellings(raw):
+    assert Settings.from_env({ENV_METRICS_ENABLED: raw}).metrics_enabled is False
+
+
+def test_typo_in_a_boolean_switch_fails_at_startup():
+    """拼错既不当真也不当假：否则人以为自己开了指标，实际上一片空白。"""
+    with pytest.raises(InvalidConfigurationError) as excinfo:
+        Settings.from_env({ENV_METRICS_ENABLED: "flase"})
+
+    assert ENV_METRICS_ENABLED in str(excinfo.value)
+
+
+def test_logging_defaults_to_readable_text_at_info():
+    settings = Settings.from_env({})
+
+    assert settings.log_level == "INFO"
+    assert settings.log_format == "text"
+
+
+def test_log_level_is_case_insensitive():
+    assert Settings.from_env({ENV_LOG_LEVEL: "debug"}).log_level == "debug"
+
+
+def test_unknown_log_level_fails_at_startup():
+    with pytest.raises(InvalidConfigurationError) as excinfo:
+        Settings.from_env({ENV_LOG_LEVEL: "SHOUT"})
+
+    assert "SHOUT" in str(excinfo.value)
+
+
+def test_unknown_log_format_fails_at_startup():
+    with pytest.raises(InvalidConfigurationError) as excinfo:
+        Settings.from_env({ENV_LOG_FORMAT: "logfmt"})
+
+    assert "logfmt" in str(excinfo.value)
+
+
+def test_direct_settings_construction_is_validated_too():
+    """校验放在 ``__post_init__``：绕过环境变量的嵌入方也逃不掉。"""
+    with pytest.raises(InvalidConfigurationError):
+        Settings(log_format="yaml")
+
+    with pytest.raises(InvalidConfigurationError):
+        Settings(log_level="LOUD")

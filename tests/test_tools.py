@@ -41,7 +41,10 @@ def test_unknown_tool_returns_404_with_error_envelope(client):
     response = client.post("/v1/tools/execute", json={"tool": "ghost", "arguments": {}})
 
     assert response.status_code == 404
-    assert response.json() == {
+    payload = response.json()
+    # 阶段 5：信封多了**可选**的 request_id，且与响应头同源；其余形状一字不变
+    assert payload["error"].pop("request_id") == response.headers["x-request-id"]
+    assert payload == {
         "error": {"code": "tool_not_found", "message": "未注册的工具：ghost", "details": None}
     }
 
@@ -105,7 +108,9 @@ def test_registry_can_be_extended_through_public_api(client, registry):
     )
 
     assert response.status_code == 500
-    assert response.json() == {
+    payload = response.json()
+    assert payload["error"].pop("request_id") == response.headers["x-request-id"]
+    assert payload == {
         "error": {
             "code": "tool_execution_failed",
             "message": "工具 boom 执行失败",

@@ -6,6 +6,11 @@
     {"error": {"code": "tool_not_found", "message": "...", "details": null}}
 
 ``code`` 是稳定标识，属于对外契约；新增 code 算兼容变更，改名必须升 ``contract_version`` 主版本。
+
+阶段 5 起信封里会**多一个可选的** ``request_id``（有请求/调用上下文时才出现）：HTTP 侧
+本来可以靠响应头 ``X-Request-ID`` 关联日志，但 **stdio MCP 没有响应头**——如果不写进载荷，
+MCP 调用方拿到失败就再也无法与服务端日志对上号。``code`` / ``message`` / ``details``
+的形状与语义不变，这是兼容扩展（调用方本来就该忽略不认识的字段）。
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+from driver_platform.observability.context import current_request_id
 
 
 class PlatformError(Exception):
@@ -29,8 +36,19 @@ class PlatformError(Exception):
         self.message = message
         self.details = details
 
-    def to_payload(self) -> dict[str, Any]:
-        return {"error": {"code": self.code, "message": self.message, "details": self.details}}
+    def to_payload(self, request_id: str | None = None) -> dict[str, Any]:
+        """转成对外信封。
+
+        ``request_id`` 不传就取当前上下文（HTTP 请求、MCP 调用都会先发号）；
+        显式传值只给测试用——这样「信封里的 id」与「响应头/日志里的 id」只可能有一个来源。
+        """
+        payload: dict[str, Any] = {
+            "error": {"code": self.code, "message": self.message, "details": self.details}
+        }
+        resolved = current_request_id() if request_id is None else request_id
+        if resolved is not None:
+            payload["error"]["request_id"] = resolved
+        return payload
 
 
 class InvalidRequestError(PlatformError):

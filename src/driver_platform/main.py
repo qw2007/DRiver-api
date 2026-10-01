@@ -12,6 +12,10 @@ from driver_platform.api.tools import router as tools_router
 from driver_platform.bootstrap import create_registry_and_host
 from driver_platform.config import Settings
 from driver_platform.errors import register_error_handlers
+from driver_platform.observability.logging import configure_logging
+from driver_platform.observability.metrics import METRICS
+from driver_platform.observability.middleware import ObservabilityMiddleware
+from driver_platform.observability.routes import build_router as build_metrics_router
 from driver_platform.protocols import build_router as build_protocols_router
 from driver_platform.security import AUTH_MODE_OFF, ENV_AUTH_MODE
 
@@ -25,7 +29,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     就能精确控制装了什么，不必改进程环境。
     """
     resolved = settings if settings is not None else Settings.from_env()
+    # 日志先于其它一切都装配：后面任何一步失败（装插件、连库、配置错误）都得有人看得见。
+    configure_logging(resolved.log_level, resolved.log_format)
     registry, host = create_registry_and_host(resolved)
+
+    # 指标开关是**进程级**的：Prometheus 抓的就是这个进程的数字，所以按配置打开/关掉
+    # 默认指标集，而不是给每个 app 造一份（否则同一进程里两个 app 会互相覆盖）。
+    if resolved.metrics_enabled:
+        METRICS.enable()
+    else:
+        METRICS.disable()
 
     if resolved.auth_mode == AUTH_MODE_OFF:
         # 开放模式是**说出来的**，不是默认出来的：静默开放会让人以为门已经锁上了。
@@ -39,11 +52,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.registry = registry
     app.state.plugins = host
+    # 可观测性中间件盖在最外层：404、401、校验失败这些「没进业务代码」的请求也要发号与记账。
+    app.add_middleware(ObservabilityMiddleware)
     register_error_handlers(app)
     app.include_router(tools_router)
     app.include_router(plugins_router)
     # 协议层的端点是**适配器自己**带进来的：加一家协议不必改这里（原则「适配器隔离」）。
     app.include_router(build_protocols_router())
+    if resolved.metrics_enabled:
+        # 端点也由能力自己带进来，挂不挂由开关决定——关掉时 /metrics 根本不存在（404）。
+        app.include_router(build_metrics_router())
 
     @app.get("/health")
     def health() -> dict[str, str]:

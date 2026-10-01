@@ -15,6 +15,9 @@
 3. **作用域在适配器里只做「翻译」**（阶段 4）：凭证 → ``Principal`` 的逻辑在
    ``security.policy``，与 HTTP 共用；这里只把可见工具翻译成 ``types.Tool``、
    把无权访问翻译成 ``isError=True`` 的结果。
+4. **每次 ``tools/call`` 由服务端发一个 request_id**（阶段 5）：stdio 没有请求头，
+   调用方也无从自带，所以号只能自己发——工具日志与 ``isError`` 信封都带上它，
+   运维才能拿一个 id 从「Agent 的报错」追到「服务端这一行日志」。
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from mcp.server.stdio import stdio_server
 
 from driver_platform import __version__
 from driver_platform.errors import PlatformError
+from driver_platform.observability.context import ensure_request_id
 from driver_platform.security import ANONYMOUS, Principal, visible_manifests
 from driver_platform.tools.base import ToolManifest
 from driver_platform.tools.executor import execute_tool
@@ -95,6 +99,7 @@ def build_server(registry: ToolRegistry, principal: Principal = ANONYMOUS) -> Se
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        ensure_request_id()  # 每次调用一个新号：日志与 isError 信封靠它对齐
         try:
             outcome = await execute_tool(registry, name, arguments, principal=principal)
         except PlatformError as exc:

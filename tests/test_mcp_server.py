@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -86,6 +87,13 @@ def test_stdio_server_lists_and_calls_tools(demo_db: str) -> None:
     assert seen["unknown_tool"].structuredContent["error"]["code"] == "tool_not_found"
     assert seen["bad_arguments"].isError is True
     assert seen["bad_arguments"].structuredContent["error"]["code"] == "invalid_arguments"
+    # 阶段 5：stdio 没有响应头，request_id 只能进信封——否则 MCP 调用方拿不到报错就
+    # 再也无法与服务端那一行日志对齐。每次调用一颗新号，所以两次失败不该是同一个值。
+    first = seen["unknown_tool"].structuredContent["error"]["request_id"]
+    second = seen["bad_arguments"].structuredContent["error"]["request_id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", first)
+    assert re.fullmatch(r"[0-9a-f]{32}", second)
+    assert first != second
     # 中文错误信息必须在 stdio 管道上原样往返（Windows 默认编码不是 UTF-8，这里钉死）
     assert "不存在" in seen["unknown_table"].structuredContent["error"]["message"]
 
