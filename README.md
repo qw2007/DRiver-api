@@ -118,6 +118,11 @@ Dockerfile              运行镜像（阶段 7 才验证）
 - [阶段 3：协议适配层](docs/stages/stage-3.md) —— MCP stdio 服务端、OpenAI Schema 导出、协议开关与错误映射
 - [阶段 4：安全权限](docs/stages/stage-4.md) —— API Key 与工具作用域、401/403 语义、凭证来源（HTTP 头 / 环境变量）
 
+项目级文档：
+
+- [任务书：整体目标与 9 阶段验收标准](docs/task-brief.md)
+- [变更日志：阶段 0–4 的逐阶段实现记录与验收证据](CHANGELOG.md)
+
 ## 已知限制
 
 - CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测。
