@@ -1,7 +1,13 @@
-# 阶段 7：compose 里的 Prometheus 抓取配置。
+# 阶段 7/8：compose 里的 Prometheus 抓取配置。
 #
-# 与 docs/observability/prometheus.yml（本机开发用）只差抓取目标：
-# 这里用 compose 的服务名，容器之间在同一个默认网络里按名字互通；
+# 与 docs/observability/prometheus.yml（本机开发用）**刻意不同**：
+#   - 这里用 dns_sd_configs 抓 compose 服务名 `driver-platform`（阶段 8）：Docker DNS 会把这个名字
+#     解析成**全部副本**的 IP，所以同一份配置在单副本（阶段 7）与 `--scale N`（阶段 8）下都对；
+#     写成 static_configs 只会锁住解析到的那一个 IP，多副本时永远只抓到一个副本。
+#   - 宿主开发那份用 static_configs 抓 host.docker.internal:8000——那里没有服务名可解析。
+#
+# 刻意**不设** instance 标签：多副本时默认的 instance（目标地址 IP:port）正好把每副本区分开；
+# 手工写死成 `instance: compose` 会让所有副本挤成同一个标签集，指标互相覆盖。
 # 服务名由 compose 提供 DNS，rename 服务就会断抓取，所以两处一起改。
 
 global:
@@ -11,7 +17,8 @@ global:
 scrape_configs:
   - job_name: driver-platform
     metrics_path: /metrics
-    static_configs:
-      - targets: ["driver-platform:8000"]
-        labels:
-          instance: compose
+    dns_sd_configs:
+      - names: ["driver-platform"]
+        type: A
+        port: 8000
+        refresh_interval: 15s

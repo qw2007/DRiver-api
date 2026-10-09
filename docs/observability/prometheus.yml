@@ -4,7 +4,9 @@
 #   docker run -d --name driver-prom -p 9090:9090 \
 #     -v "$PWD/docs/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" prom/prometheus
 #
-# 阶段 7 的 compose 会把它换成服务名（driver-platform:8000），而不是 host.docker.internal。
+# 阶段 7 的 compose 会把它换成服务名而不是 host.docker.internal；阶段 8 起 compose 侧改用
+# dns_sd_configs 按服务名发现全部副本（见 deploy/prometheus/prometheus.yml），
+# 这份宿主配置保持 static_configs——uvicorn 直起时只有一个固定地址，没有服务发现可言。
 
 global:
   scrape_interval: 5s

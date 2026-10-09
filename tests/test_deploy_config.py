@@ -20,6 +20,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 import driver_platform.config as config_module
@@ -157,7 +158,12 @@ def test_grafana_does_not_auto_update_its_bundled_plugins() -> None:
     assert environment["GF_PLUGINS_PREINSTALL_AUTO_UPDATE"] == "false"
 
 
-def test_prometheus_scrape_configs_differ_only_in_the_target() -> None:
+def test_prometheus_scrape_configs_differ_only_in_the_discovery_source() -> None:
+    """两份抓取配置只允许在「怎么找到目标」上不同。
+
+    - compose 侧（阶段 8）：``dns_sd_configs`` 按服务名发现**全部**副本，副本数变了不用改配置；
+    - 宿主侧（阶段 5 起）：平台用 uvicorn 直起，只有一个固定地址可抓。
+    """
     compose_config = yaml.safe_load(DEPLOY_PROMETHEUS.read_text(encoding="utf-8"))
     host_config = yaml.safe_load(
         (ROOT / "docs" / "observability" / "prometheus.yml").read_text(encoding="utf-8")
@@ -168,8 +174,20 @@ def test_prometheus_scrape_configs_differ_only_in_the_target() -> None:
     host_job = host_config["scrape_configs"][0]
     assert compose_job["job_name"] == host_job["job_name"] == "driver-platform"
     assert compose_job["metrics_path"] == host_job["metrics_path"] == "/metrics"
-    assert compose_job["static_configs"][0]["targets"] == ["driver-platform:8000"]
+    assert compose_job["dns_sd_configs"] == [
+        {
+            "names": ["driver-platform"],
+            "type": "A",
+            "port": 8000,
+            "refresh_interval": "15s",
+        }
+    ]
     assert host_job["static_configs"][0]["targets"] == ["host.docker.internal:8000"]
+
+    # 除了发现方式，两份配置的其余部分必须逐字相同。
+    assert {key: value for key, value in compose_job.items() if key != "dns_sd_configs"} == {
+        key: value for key, value in host_job.items() if key != "static_configs"
+    }
 
 
 def test_datasource_uid_matches_the_dashboard_panels() -> None:
@@ -254,6 +272,42 @@ def test_seed_demo_db_builds_the_table_the_readme_example_queries(tmp_path: Path
     readme = README_PATH.read_text(encoding="utf-8")
     assert '"table": "customers"' in readme
     assert '"city": "上海"' in readme
+
+
+def test_seed_installs_the_database_atomically(tmp_path: Path, monkeypatch: Any) -> None:
+    """先写同目录临时文件、再原子换名。
+
+    多副本共用数据卷时，N 个容器会在同一瞬间都看到「库不存在」：直接写同一个 SQLite 文件
+    会 `database is locked`，或者留下半成品库——平台以只读打开它，之后**谁都查不了**。
+    """
+    seed_module = _load_module("seed_demo_db_atomic", SEED_PATH)
+    database = tmp_path / "demo.db"
+    installs: list[tuple[Path, Path]] = []
+    real_replace = seed_module.os.replace
+
+    def spy(source: Any, target: Any) -> None:
+        assert Path(source).parent == database.parent, "临时文件必须与目标同目录才能原子换名"
+        assert Path(source).name != database.name
+        assert Path(source).exists()
+        installs.append((Path(source), Path(target)))
+        real_replace(source, target)
+
+    monkeypatch.setattr(seed_module.os, "replace", spy)
+    assert seed_module.seed(database) is True
+    assert len(installs) == 1
+    assert installs[0][1] == database
+    assert [path.name for path in tmp_path.iterdir()] == ["demo.db"]
+
+    # 换名失败（磁盘满、被 kill）时必须把临时文件收干净，否则下一次启动会踩到它。
+    broken = tmp_path / "broken" / "demo.db"
+
+    def fail(source: Any, target: Any) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr(seed_module.os, "replace", fail)
+    with pytest.raises(OSError, match="boom"):
+        seed_module.seed(broken)
+    assert [path.name for path in (tmp_path / "broken").iterdir()] == []
 
 
 def test_entrypoint_seeds_only_when_asked_and_then_execs(monkeypatch: Any) -> None:

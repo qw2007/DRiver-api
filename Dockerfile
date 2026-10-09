@@ -9,6 +9,12 @@
 
 FROM python:3.14-slim
 
+# 构建戳：滚动验收与现网排查要能区分两次构建的镜像——同一份源码重建会命中构建缓存，
+# 镜像 ID 一模一样，就看不出「新副本跑的是新镜像」。构建时传入即可：
+#   docker compose build --build-arg DRIVER_BUILD_STAMP=<日期或 commit>
+ARG DRIVER_BUILD_STAMP=dev
+LABEL driver-platform.build.stamp=$DRIVER_BUILD_STAMP
+
 # 不写 .pyc、不缓冲日志：容器里 stdout 就是日志通道，缓冲会让 docker logs 晚一拍。
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -31,4 +37,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
     CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"
 
 ENTRYPOINT ["python", "/app/deploy/docker/entrypoint.py"]
-CMD ["uvicorn", "driver_platform.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 阶段 8：--timeout-graceful-shutdown 20 让 uvicorn 收到 SIGTERM 后先停收新连接、等在途请求收尾
+# （最长 20 秒）再退出；退出阶段 FastAPI 的 lifespan 会卸载插件（关掉 SQLite 连接）。
+# 没有这个窗口，滚动替换期间的最后一个在途请求会被直接掐断。
+CMD ["uvicorn", "driver_platform.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "20"]

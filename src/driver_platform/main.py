@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 
@@ -16,10 +18,25 @@ from driver_platform.observability.logging import configure_logging
 from driver_platform.observability.metrics import METRICS
 from driver_platform.observability.middleware import ObservabilityMiddleware
 from driver_platform.observability.routes import build_router as build_metrics_router
+from driver_platform.plugins.host import PluginHost
 from driver_platform.protocols import build_router as build_protocols_router
 from driver_platform.security import AUTH_MODE_OFF, ENV_AUTH_MODE
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """进程收尾（阶段 8）。
+
+    ``docker stop`` 的 SIGTERM 直达 uvicorn（阶段 7 的入口脚本用 ``os.execvp``，uvicorn 就是 PID 1），
+    「停止接受新连接 + 等在途请求收尾」由 uvicorn 的 ``--timeout-graceful-shutdown`` 负责；
+    这里只负责**关掉插件资源**（SQLite 连接、将来的连接池）——否则每次滚动替换都会漏掉一份。
+    """
+    yield
+    host: PluginHost = app.state.plugins
+    logger.info("进程收尾：卸载插件（逆序，逐个尽力而为）")
+    host.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -48,7 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             AUTH_MODE_OFF,
         )
 
-    app = FastAPI(title="Driver Platform", version=__version__)
+    app = FastAPI(title="Driver Platform", version=__version__, lifespan=_lifespan)
     app.state.settings = resolved
     app.state.registry = registry
     app.state.plugins = host

@@ -7,11 +7,17 @@
 远程插件的价值在于「真的跨进程说 HTTP」，用 mock 传输层测不出真 HTTP 路径
 （``tests/test_remote_plugin.py`` 里另有 ``httpx.MockTransport`` 的单元测试，
 那条线测的是错误映射与契约校验，不需要网络）。
+
+**回环地址必须绕过本机代理**：开发机上常常跑着系统代理（Clash 等），``httpx`` 默认
+``trust_env=True``，会把 ``http://127.0.0.1:<临时端口>`` 也发给代理，代理回不了这个
+临时端口就变成 502 —— 与代码无关，纯粹是环境。这里用 ``setdefault`` 补上 ``NO_PROXY``
+（不覆盖调用者已经设好的值），让测试在任何装了代理的机器上都能跑。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sqlite3
 import threading
@@ -28,6 +34,21 @@ from driver_platform.config import Settings
 from driver_platform.main import create_app
 from driver_platform.observability.context import request_id_var
 from driver_platform.tools import ToolRegistry
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+#: 不覆盖调用者已设的值，只在缺少回环豁免时补上（空字符串也要补，空 ≠ 有豁免）。
+_BYPASS_NAMES = ("NO_PROXY", "no_proxy")
+
+
+def _ensure_loopback_bypass() -> None:
+    for name in _BYPASS_NAMES:
+        parts = [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+        if not any(host in parts for host in _LOOPBACK_HOSTS):
+            parts.extend(_LOOPBACK_HOSTS)
+            os.environ[name] = ",".join(parts)
+
+
+_ensure_loopback_bypass()
 
 REMOTE_PLUGIN_ID = "echo_farm"
 REMOTE_PLUGIN_VERSION = "1.0.0"

@@ -1,0 +1,42 @@
+# 阶段 8：多副本 overlay（阶段 7 的 docker-compose.yml 不改，单副本仍是默认形态）。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#       up -d --build --scale driver-platform=3
+#   curl.exe http://127.0.0.1:8000/health      # 打的是 gateway，它分发到 3 个副本之一
+#
+# 覆盖了三件事，每一件都有理由：
+#   1. 平台不再发布宿主端口（!override []）——不摘掉的话 `--scale 3` 会让三个容器抢同一个宿主端口；
+#      对外入口只剩 gateway 一个（`DRIVER_PORT` 改由它占用）。
+#   2. 新增 gateway（nginx，钉摘要）：它按 Docker DNS 解析服务名并轮询到全部副本，
+#      再用 proxy_next_upstream 兜住「副本正在退出」的瞬间（见 deploy/nginx/conf.d/default.conf）。
+#   3. Prometheus **不用改**：base 里的抓取配置已经是 dns_sd_configs（抓服务名 → 全部副本 IP）。
+
+name: driver-platform
+
+services:
+  driver-platform:
+    ports: !override []
+    environment:
+      # 三个副本共享同一个 data 卷，因此种子脚本必须是并发安全的原子安装
+      # （deploy/demo/seed_demo_db.py：先写临时文件再 os.replace）。
+      DRIVER_SEED_DEMO_DB: "1"
+
+  gateway:
+    # 与本仓库其它第三方服务同一套规矩：钉摘要，保证「同一份 compose 起同一个镜像」。
+    image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    depends_on:
+      driver-platform:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${DRIVER_PORT:-8000}:80"
+    healthcheck:
+      # 镜像里没有 curl，但有 busybox 的 wget；探的是网关自身（不经过上游），
+      # 这样「上游全挂了」不会让 gateway 容器被判成不健康。
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/gateway-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 2s
+    restart: unless-stopped
