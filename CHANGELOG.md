@@ -17,6 +17,7 @@
 | 5 可观测性 | `80cd902` | 2026-10-01 | 24 files, +1925 / −48 | Grafana 看 QPS/延迟/错误率；日志按 `request_id` 追全链路 |
 | 6 远程插件 | `a2a0abc` | 2026-10-01 | 17 files, +1824 / −17 | 远程注册即可调用；`DELETE` 下线后工具自动不可用 |
 | 7 部署交付 | `803d3c6` | 2026-10-01 | 14 files, +1052 / −28 | `docker compose up` 起全平台；容器健康、指标被抓、面板有数 |
+| 8 生产加固 | `153e209` | 2026-10-09 | 15 files, +1151 / −21 | 3 副本经网关滚动替换，8.7 万次请求 0 失败；Prometheus 三个副本 up=1 |
 | 文档（任务书 + 变更日志） | `783b5c6` | 2026-10-01 | 4 files, +409 / −2 | `docs/task-brief.md` + `CHANGELOG.md` + README 入口 |
 | — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 
@@ -187,6 +188,31 @@
 
 ---
 
+## 阶段 8：生产加固（`153e209`，2026-10-09）
+
+**目标**：多副本；滚动更新不中断；旧版 Agent 兼容。
+
+**交付物**：`docker-compose.scale.yml`（overlay：摘端口 + nginx 网关）；`deploy/nginx/conf.d/default.conf`；`deploy/rollout.py`、`deploy/traffic_probe.py`；`deploy/prometheus/prometheus.yml` 改 `dns_sd_configs`；`Dockerfile` 加 `--timeout-graceful-shutdown` 与构建戳 `ARG`/`LABEL`；`src/driver_platform/main.py` 加 lifespan；`deploy/demo/seed_demo_db.py` 改原子安装；`tests/test_compat.py`、`tests/test_lifecycle.py`、`tests/test_scale_config.py`（新增）与 `tests/test_deploy_config.py`、`tests/conftest.py`（改）；`.github/workflows/ci.yml` 的 `deploy` 任务加静态校验；`docs/stages/stage-8.md`。README 的路线表、用法、目录结构与已知限制同步更新。
+
+**关键决策与理由**
+
+- **多副本用 Compose `--scale` + nginx，不是 K8s**：compose 已经有服务名 DNS、健康门与 `--scale` 三个原语，而阶段 7 那份单副本 compose 正好是它的对照物；换 K8s 会把「阶段 7 的部署描述」变成一次性产物。overlay 文件而不是改基础文件：单副本用法一字不动。
+- **网关只做解析，不做服务发现**：`resolver 127.0.0.11` + 变量式 `proxy_pass http://$backend:8000` 让 nginx 每次请求问 Compose 内置 DNS，副本 IP 变了不用 reload，也不用维护 `upstream` 块。
+- **优雅停机靠 uvicorn + lifespan，不自己写信号处理**：入口脚本 `os.execvp` 已让 uvicorn 是 PID 1，再注册 SIGTERM handler 就是和它抢活。两级窗口各司其职——`--timeout-graceful-shutdown 20` 管「最多等多久」，lifespan 的退出阶段管「等的时候做什么」（`PluginHost.close()` 逆序卸载插件、逐个尽力而为）。
+- **滚动必须能被测量，所以写成脚本**：Compose 非 swarm 模式没有原生 rolling（`deploy.replicas` 被忽略、`up -d` 是先停后起），「不中断」就成了一句无法反驳的话。`rollout.py` 把「停一个 → 补一个 → 等健康」做成可重复序列，`traffic_probe.py`（纯标准库，本机没有 ab/hey/k6）在窗口内持续打流量并报成功/失败与状态码分布——**0 失败是可以被复现的断言，不是感觉**。
+- **探针走网关而不是某个副本**：它衡量的是「客户端视角有没有断」；直接打副本只能证明「那个副本当时活着」。
+- **兼容靠「把隐式现状钉成测试 + 写下策略」，不加版本协商中间件**：真正脆弱的地方是没人知道 pydantic 默认 `extra='ignore'`（顶层与工具入参的未知字段都被忽略）算不算承诺——于是把它写成 `tests/test_compat.py` 的断言，并在阶段说明里给出 1.x 能加什么、什么必须升主版本的判据。中间件只能拦住它自己知道的字段。
+- **抓全副本改 `dns_sd_configs`**：副本 IP 是动态的，`static_configs` 写死一个就只抓一个；`dns_sd` 一份配置同时服务单副本与多副本，`instance` 默认是「目标地址」，正好用来区分副本。
+- **演示库种子改原子安装**：多副本共挂同一数据卷，N 个容器同时启动都会看到「库不存在」；直接写同一路径会 `database is locked` 或留下半成品库，而平台是**只读**打开的——之后谁都查不了。改成「同目录临时文件 + `os.replace`」，要么完整可见、要么不存在。
+- **镜像加构建戳**：同源重建命中构建缓存时镜像 ID 不变，光看构建输出分不清新旧，「替换真的换了镜像」就无从核对；`ARG DRIVER_BUILD_STAMP` + `LABEL` 让这件事在镜像层可查。
+- **CI 只做静态校验（overlay `config --quiet`、`nginx -t`、脚本 `py_compile`）**：真滚动要拉镜像、起网关、跑分钟级探针，对冒烟没有增益；能进 CI 的是「配置能合并、nginx 配置合法、脚本没写坏」。
+
+**验收证据**：门禁全绿——`pytest` **276 passed**（0 failed / 0 error）、覆盖率 **95%**（1257 语句 / 65 未覆盖），`ruff check .` All checks passed，`ruff format --check src tests deploy examples` **63 files**，`mypy` **34 source files**。本机 3 副本 + gateway 滚动验收（脚本自身 exit 0）：构建带戳新镜像（`fcb83fa59641` → `fad8a0d26702`，`image-changed: True`），三个副本逐个 `stop --time 25` → `rm` → `up -d --no-deps --no-recreate --scale driver-platform=3`，**每一步替换后都是三个 healthy 且新旧镜像并存**；经网关的探针 `{"total": 86875, "ok": 86875, "failed": 0, "statuses": {"200": 86875}, "duration_ms": {"min": 1.863, "median": 3.090, "max": 2014.668}}`（上一轮同序列是 91671 / 0 失败）；网关 `GET /health` → `{"status":"ok"}`、`POST /v1/tools/execute`（`read-key`）→ `{"tool":"echo","contract_version":"1.0","result":{"echo":"rollout","times":1}}`。Prometheus 重载 `dns_sd_configs` 后 `targets-count=3`、三个副本 `health=up` 且 `instance` 各不相同，`up{job="driver-platform"}` 三条序列值全为 1。优雅停机证据：`docker stop` 后容器日志依次出现 `INFO: Shutting down` → `INFO: Waiting for application shutdown.` → `{"logger": "driver_platform.main", "msg": "进程收尾：卸载插件（逆序，逐个尽力而为）"}` → `INFO: Application shutdown complete.`，且 `docker stop` 未等到 25 秒上限就返回。逐条证据与「本阶段自己踩出并修掉的 9 个真实缺陷」见[阶段 8 说明](docs/stages/stage-8.md)的「验收证据」。
+
+**已知限制**：`--scale` 不是编排（不自动补副本、不保证分散到不同宿主、无滚动策略）；nginx 解析有 5 秒窗口（靠 `proxy_next_upstream` 重试兜底，代价是多一跳）；重试对非幂等请求也开着（当前工具全是只读查询才安全）；单机多副本共享同一份只读数据卷（写型插件不安全）；探针只衡量成功率不衡量延迟分布；优雅停机上限 20 秒，超时会被强杀；镜像仍以 root 运行、仍绑基础镜像标签、只验证过 amd64（阶段 7 的限制延续）；`/metrics` 经网关暴露且仍无鉴权；滚动脚本不做版本并存的双写/流量着色；远程插件的 HTTP 客户端会继承宿主机代理设置（私网部署应显式配 `NO_PROXY`）。
+
+---
+
 ## 工具链与环境约束（非阶段交付，2026-10-01）
 
 **目标**：为阶段 5 备齐工具，并把本机开发环境的坑一次性固化下来——**不改变任何对外行为**。
@@ -210,10 +236,10 @@
 
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7，外加 7 次文档提交、1 次工具链与环境提交与 1 次任务状态更新，共 17 个提交、83 个受版本控制的文件（换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → 58 files already formatted；`mypy src` → Success: no issues found in 34 source files；`pytest` → **256 passed**，覆盖率 **95%**（1248 语句 / 68 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交与 2 次任务状态更新（换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **63 files** already formatted；`mypy` → Success: no issues found in **34 source files**；`pytest` → **276 passed**，覆盖率 **95%**（1257 语句 / 65 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
-- **下一步**：阶段 8「生产加固」—— 多副本、滚动更新不中断（compose 已用 `exec` 让 uvicorn 成为 PID 1，`SIGTERM` 直达应用，可直接接）、旧版 Agent 兼容；阶段 7 起全平台只需在仓库根执行 `docker compose up -d --build`。
+- **下一步**：九阶段目标已收口。要继续往下走，先处理 [`docs/handoff.md`](docs/handoff.md) 第 3.3 节的待拍板项（CI 是否加 `--cov-fail-under`、bandit/pip-audit 是否进 CI、是否需要真正的编排层、包版本与发布流程），以及阶段 8 已知限制里最接近生产的两条：镜像瘦身/非 root 运行、`/metrics` 收进内网。
 
 ## 已知限制（汇总）
 
@@ -224,5 +250,6 @@
 5. 鉴权默认关且只到工具名粒度，无速率限制/配额/审计/吊销，详见阶段 4 说明；
 6. 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零），`request_id` 只在本进程内贯穿（无 traceparent），访问日志不记请求体，详见阶段 5 说明；
 7. 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，`base_url` 是单点且每次调用新建 HTTP 客户端，详见阶段 6 说明；
-8. 部署是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
-9. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
+8. 部署的默认形态是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
+9. 多副本是**单机 Compose 的 `--scale`**、不是编排（不自动补副本、无滚动策略、跨宿主无从谈起），nginx 解析有 5 秒窗口，重试对非幂等请求也开着，多副本共享同一份只读数据卷，探针只衡量成功率，`/metrics` 经网关暴露且仍无鉴权，远程插件的 HTTP 客户端会继承宿主机代理设置，详见阶段 8 说明；
+10. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许；本机 DSH 会话里 **Python 子进程**连 `danger-full-access` 都解不开（写不了工作区外、打不开 Docker 命名管道），所以本机滚动验收用等价 PowerShell 序列替代 `deploy/rollout.py`（见阶段 8 说明的验收证据第 5 节）。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。

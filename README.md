@@ -14,7 +14,7 @@
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志可按 request_id 追全链路 | ✅ 已完成 |
 | 6 | 远程插件 | 远程注册可调用；下线后工具自动不可用 | ✅ 已完成 |
 | 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | ✅ 已完成 |
-| 8 | 生产加固 | 多副本；滚动更新不中断；旧版 Agent 兼容 | 待开始 |
+| 8 | 生产加固 | 多副本；滚动更新不中断；旧版 Agent 兼容 | ✅ 已完成 |
 
 ## 八条核心原则（约束，不是建议）
 
@@ -160,6 +160,36 @@ curl -X POST http://localhost:8000/v1/tools/execute -H "X-API-Key: read-key" \
 
 Grafana 容器另外关掉了自带插件的预装与自动更新（`GF_PLUGINS_PREINSTALL_DISABLED` / `GF_PLUGINS_PREINSTALL_AUTO_UPDATE`）：Grafana 13 默认在启动时把自带插件升级到最新版，先停掉旧进程再从 `storage.googleapis.com` 下载，离线或受限网络下下载失败会**连带注销**自带的那份——包括 prometheus 数据源，表现是面板「Datasource not found」而平台侧一切正常。要升级 Grafana 请改 compose 里的镜像摘要。踩坑全过程见[阶段 7 说明](docs/stages/stage-7.md)的验收证据。
 
+### 多副本与滚动更新（阶段 8）
+
+```bash
+# 3 副本 + nginx 网关（宿主 8000 交给网关，平台端口从 compose 里摘掉）
+docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --build --scale driver-platform=3
+curl.exe -s http://127.0.0.1:8000/health            # {"status":"ok"}
+
+# 一边打流量一边逐个换副本；探针只要有一次失败就返回 1
+python deploy/rollout.py --replicas 3 --probe-seconds 60 --build
+python deploy/traffic_probe.py --seconds 30 --workers 4 --expect 200
+```
+
+- **网关不做服务发现，只做解析**：`deploy/nginx/conf.d/default.conf` 用 `resolver 127.0.0.11`（Compose 内置 DNS）
+  动态解析服务名 `driver-platform`，再 `proxy_pass http://$backend:8000`；副本 IP 变了不用重载 nginx。
+  `proxy_next_upstream … non_idempotent` 让「某个副本正在退出」这一瞬由**重试**兜底（当前工具全是只读查询）。
+- **滚动靠脚本**：Compose 非 swarm 模式没有原生 rolling（`up -d` 是先停后起），`deploy/rollout.py`
+  把「`stop --time 25` → `rm` → `up -d --no-deps --no-recreate --scale driver-platform=N` → 等健康」
+  做成可重复的序列，`deploy/traffic_probe.py`（纯标准库）在整个窗口里持续打流量并报成功/失败与状态码分布。
+  本机实测：8.7 万次请求经网关、**0 失败**，替换期间新旧镜像并存，见[阶段 8 说明](docs/stages/stage-8.md)的验收证据。
+- **优雅停机**：`Dockerfile` 的 CMD 带 `--timeout-graceful-shutdown 20`，应用侧由 `main.py` 的 lifespan
+  在退出阶段调用 `PluginHost.close()`（逆序卸载插件、逐个尽力而为）。`docker stop` 会先停收新连接再跑收尾，
+  日志里能看到「进程收尾：卸载插件」。
+- **抓全部副本**：`deploy/prometheus/prometheus.yml` 用 `dns_sd_configs` 按服务名发现所有副本，
+  一份配置同时服务单副本与多副本；`instance` 默认是「副本 IP:端口」，`sum by (instance)` 就能看谁在答。
+- **旧版 Agent 兼容**：`tests/test_compat.py` 把「允许的演进」钉成测试——顶层未知字段被忽略、
+  `arguments` 里的未知字段被忽略、成功响应恒为 `{"tool","contract_version","result"}`、
+  错误信封只承诺 `code`/`message`、已发布工具的 `contract_version` 保持 `1.0`。
+  策略（1.x 能加什么、什么必须升主版本）写在[阶段 8 说明](docs/stages/stage-8.md)的「契约兼容策略」。
+- 只想本地单副本时原来的 `docker compose up -d --build` 一字不用改；两个 overlay 文件是叠加关系。
+
 ## 目录结构
 
 ```
@@ -176,10 +206,14 @@ src/driver_platform/
   protocols/            协议适配器：__init__（协议开关 + 路由装配）、openai_schema（纯翻译）、mcp（stdio 服务端）、mcp_server（进程入口）、routes
   observability/        request_id 上下文、四个指标、结构化日志（text/json）、ASGI 中间件、/metrics 路由
 examples/               可运行的远端插件参考实现（remote_echo_service.py，供本机人工验收）
-deploy/                  容器入口脚本、演示库种子、Prometheus 抓取配置、Grafana provisioning
-tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限/可观测性/远程插件/部署描述 测试
+deploy/                  容器入口脚本、演示库种子（原子安装）、Prometheus 抓取配置、Grafana provisioning、
+                         nginx 网关配置、多副本滚动脚本（rollout）与流量探针（traffic_probe）
+tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限/可观测性/远程插件/部署描述/
+                        进程生命周期/契约兼容 测试
 .github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest，外加部署冒烟（compose 校验/构建/健康检查）
+                        与多副本配置静态校验（overlay 合并、nginx -t、验收脚本语法）
 docker-compose.yml       阶段 7：一条命令起全平台（driver-platform + Prometheus + Grafana，第三方镜像钉摘要）
+docker-compose.scale.yml 阶段 8 overlay：摘掉平台端口、加 nginx 网关（`--scale` 配合使用，不改动基础文件）
 Dockerfile               运行镜像（分层安装 + HEALTHCHECK + 容器入口脚本）
 .dockerignore            构建上下文收窄：.venv / .git 不出现在发往守护进程的上下文里
 docs/                   阶段设计说明（stages/）+ 任务书 + 变更日志 + 环境与工具手册
@@ -197,12 +231,13 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 - [阶段 5：可观测性](docs/stages/stage-5.md) —— 四个指标与标签取值约定、`/metrics` 的开关与暴露面、日志字段契约、request_id 的贯穿路径
 - [阶段 6：远程插件](docs/stages/stage-6.md) —— 远端契约 1.0（`/manifest` 与 `/execute`）、管理接口的三道门、错误码映射、同步/异步的边界
 - [阶段 7：部署交付](docs/stages/stage-7.md) —— compose 编排、镜像分层与摘要钉版、Grafana provisioning、演示库种子、CI 的部署冒烟
+- [阶段 8：生产加固](docs/stages/stage-8.md) —— 多副本与网关、滚动替换与探针、优雅停机的两级窗口、抓全副本、契约兼容策略（1.x）
 
 项目级文档：
 
 - [任务书：整体目标与 9 阶段验收标准](docs/task-brief.md)
 - [交接说明：换机器/换会话继续开发前必读](docs/handoff.md)
-- [变更日志：阶段 0–7 的逐阶段实现记录与验收证据](CHANGELOG.md)
+- [变更日志：阶段 0–8 的逐阶段实现记录与验收证据](CHANGELOG.md)
 - [环境与工具手册：本机工具链、提权清单、沙箱约束与 GitHub/Docker 直连解法](docs/environment.md)
 
 ## 已知限制
@@ -214,5 +249,8 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 - 鉴权默认关且只到「工具名」这一层：不配 `DRIVER_AUTH_MODE=required` 就是开放的，密钥明文放在环境变量里，没有速率限制、配额、审计与吊销，细节见阶段 4 说明的「已知限制」。
 - 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零，多副本各算各的）；`X-Request-ID` 只在**本进程内**贯穿（没有 traceparent），日志不记请求体，直方图用默认桶（5 ms–10 s），细节见阶段 5 说明的「已知限制」。
 - 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，远端地址是单点，每次调用新建 HTTP 客户端（不复用连接池），细节见阶段 6 说明的「已知限制」。
-- 部署是**单副本**：容器以 root 跑、无资源限额、无 `depends_on` 之外的启动编排，Prometheus / Grafana 钉的摘要是 amd64 平台摘要，`docker compose down -v` 会删数据卷，细节见阶段 7 说明的「已知限制」。
+- 默认那份 `docker-compose.yml` 是**单副本**：容器以 root 跑、无资源限额、无 `depends_on` 之外的启动编排，Prometheus / Grafana 钉的摘要是 amd64 平台摘要，`docker compose down -v` 会删数据卷，细节见阶段 7 说明的「已知限制」。
+- 多副本是**单机 Compose 的 `--scale`**，不是编排：nginx 解析有 5 秒窗口（靠重试兜底）、重试对非幂等请求也开着、
+  副本不会自动补回、多副本共享同一份只读数据卷、探针只衡量成功率不衡量延迟分布；`/metrics` 经网关暴露且仍无鉴权；
+  远程插件的 HTTP 客户端会继承宿主机代理设置。细节见阶段 8 说明的「已知限制」。
 - 本机（Windows + DSH 沙箱）有三处环境级坑：pip / 全量 pytest / docker / **联网 Git 操作**需提权，GitHub 需 `sslBackend=schannel` 直连，Docker 需镜像加速——**这些只是本机噪声，不影响 CI**，逐条解法见[环境与工具手册](docs/environment.md)。

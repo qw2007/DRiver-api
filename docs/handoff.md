@@ -12,11 +12,11 @@
 |---|---|
 | 项目 | 连接 AI Agent（Codex / Claude / ChatGPT…）与数据库等工具的**中间层驱动平台**：工具总线 + 协议适配 + 插件宿主（不是业务系统） |
 | 技术栈 | Python 3.11+（CI 与实测 3.14）、FastAPI、pydantic v2、uvicorn；MCP 走官方 SDK（可选依赖） |
-| 进度 | **阶段 0–7 已完成并推送**；阶段 8「生产加固」未开始 |
-| 门禁现状 | `pytest` **256 passed**、覆盖率 **95%**（1248 语句 / 68 未覆盖）；`ruff check .` / `ruff format --check src tests deploy examples`（58 files）/ `mypy`（34 files）全绿 |
+| 进度 | **阶段 0–8 已完成并推送** —— 任务书的九阶段验收标准全部落地；后续是加固与发布流程（见第 3 节） |
+| 门禁现状 | `pytest` **276 passed**、覆盖率 **95%**（1257 语句 / 65 未覆盖）；`ruff check .` / `ruff format --check src tests deploy examples`（63 files）/ `mypy`（34 files）全绿 |
 | CI | `test` 与 `deploy` 两个任务在 GitHub Actions 上全绿（[run 36834191494](https://github.com/qw2007/DRiver-api/actions/runs/36834191494)，提交 `7f34f26`） |
-| 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`） |
-| 下一步 | 阶段 8：多副本、滚动更新不中断、旧版 Agent 兼容 —— 见第 3 节 |
+| 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3` |
+| 下一步 | 九阶段目标已收口；继续做的话先拍板第 3.3 节的四项，再看阶段 8 说明里最接近生产的两条限制（镜像瘦身/非 root、`/metrics` 收进内网） |
 
 ---
 
@@ -36,7 +36,7 @@
 | 5 | 可观测性 | Grafana 看 QPS/延迟/错误率；日志按 `request_id` 追全链路 | ✅ |
 | 6 | 远程插件 | 远程注册可调用；插件下线后工具自动不可用 | ✅ |
 | 7 | 部署交付 | `docker compose up` 起全平台；CI/CD 通过 | ✅ |
-| 8 | 生产加固 | 多副本；滚动更新不中断；旧版 Agent 兼容 | ⬜ 待开始 |
+| 8 | 生产加固 | 多副本；滚动更新不中断；旧版 Agent 兼容 | ✅ |
 
 **八条原则**（约束，不是建议）：接口先行 / 插件契约版本化（破坏性变更升主版本）/ 适配器隔离（MCP、OpenAI、LangChain 互不依赖）/ 配置外部化（只从环境变量读）/ 测试从阶段 0 开始 / 可观测性内建 / 文档随代码同步 / 特性开关默认关。
 
@@ -106,35 +106,35 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 
 ---
 
-## 3. 仍需要完成的工作
+## 3. 接下来做什么
 
-### 3.1 阶段 8「生产加固」（下一阶段的主体）
+### 3.1 阶段 8「生产加固」（已完成，这里是当时的验收点与结论）
 
-| 验收点 | 现在的地基 | 需要补的东西（建议顺序） |
+| 验收点 | 阶段 8 的做法 | 结论与证据 |
 |---|---|---|
-| 多副本 | compose 目前单实例；服务**无进程内状态**（注册表与插件在启动时装配，指标是进程级的） | 先定状态归属：指标用 Prometheus 抓多实例（`instance` 标签已有），请求日志的 `request_id` 只在单进程内贯穿 → 需要决策「多副本下如何追全链路」；再决定 compose `--scale` 还是 K8s |
-| 滚动更新不中断 | `Dockerfile` 已让 uvicorn 成为 PID 1（`exec`），所以 `SIGTERM` 直达应用；健康检查已就绪 | 需要：优雅停机（停止接新请求、等在途请求结束）、就绪探针语义（健康 ≠ 就绪）、compose 层面的滚动/替换验证（连续打流量期间滚动，0 失败） |
-| 旧版 Agent 兼容 | 工具契约有 `contract_version`（当前工具都是 `1.0`）；错误信封稳定 | 需要：定义兼容策略并用测试钉住（老客户端发老形状 → 仍可用；新字段只增不改；破坏性变更升主版本），并写成文档 |
+| 多副本 | 保持「无进程内状态」：`docker-compose.scale.yml` overlay 摘掉平台端口、前置 nginx 网关；`--scale driver-platform=3` | 三个副本经网关分流，`count(up{job="driver-platform"} == 1) == 3`；Prometheus 改 `dns_sd_configs` 按服务名发现，`instance` 区分副本 |
+| 滚动更新不中断 | `deploy/rollout.py`（停一个 → 补一个 → 等健康）+ `deploy/traffic_probe.py`（纯标准库持续打流量）；优雅停机是 uvicorn `--timeout-graceful-shutdown 20` + lifespan 里的 `PluginHost.close()` | 经网关 86875 次请求 **0 失败**，替换期间新旧镜像并存，三个副本始终 healthy；`docker stop` 日志可见「进程收尾：卸载插件」 |
+| 旧版 Agent 兼容 | `tests/test_compat.py` 把隐式承诺钉成断言（未知字段被忽略、响应三键固定、错误信封只承诺 `code`/`message`、已发布工具 `contract_version` 保持 `1.0`），策略写在阶段说明的「契约兼容策略（1.x）」 | 兼容策略有文档、有测试；破坏性变更的判据（什么必须升主版本）写清楚了 |
 
-建议做法沿用既有节奏：**先写 `docs/stages/stage-8.md` 的设计说明（五件套）再落地**，结束时四道门禁 + CI 全绿。
+细节与逐条证据见 [`stage-8.md`](stages/stage-8.md)（选型 / 模块设计 / 接口定义 / 关键代码 / 测试与部署 / 非目标 / 已知限制 / 验收证据）。
 
 ### 3.2 已知未做 / 明确留白（都不是 bug，是范围选择）
 
 1. **CI 覆盖率门禁未加**：本地跑 `--cov`（95%），但 CI 没有 `--cov-fail-under`。**这条当时是留给用户拍板的开放项**，至今未定。
 2. **`bandit` / `pip-audit` 未进 CI**：本机实测过（`bandit -r src -q` 干净、`pip-audit` 无已知漏洞），但没写进工作流。
 3. **CI 只跑 Python 3.14**：`requires-python` 放宽到 3.11+，3.11 / 3.12 从未实测（要加矩阵很容易，就是时间成本）。
-4. **PostgreSQL 插件未落地**：`task-brief.md` 原计划「PostgreSQL 复用同一插件契约」，阶段 7 只做了部署交付，插件本身仍是 SQLite 一个。
+4. **PostgreSQL 插件未落地**：`task-brief.md` 原计划「PostgreSQL 复用同一插件契约」，至今仍只有 SQLite 一个（本机 Docker 已可用，可用 Testcontainers 补）。
 5. **`mypy` 只检查 `src`**：`tests/`、`deploy/`、`examples/` 不在类型检查范围内。
 6. **包版本仍是 `0.0.0`，没有 tag / release，也不推镜像仓库**：交付以「源码 + compose」为准；对外契约版本走各工具的 `contract_version`，与包版本解耦。
-7. **阶段 6 远程插件的留白**：清单只在装载时拉一次，无重试/熔断/缓存/热更新/签名校验；`base_url` 是单点；每次调用新建 HTTP 客户端。
+7. **阶段 6 远程插件的留白**：清单只在装载时拉一次，无重试/熔断/缓存/热更新/签名校验；`base_url` 是单点；每次调用新建 HTTP 客户端；客户端会继承宿主机代理设置。
 8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 无鉴权、指标是进程内的（重启归零）、无 traceparent（`request_id` 不跨进程）。
-9. **阶段 7 部署留白**：单副本；容器 root、无资源限额、无只读根文件系统；第三方镜像钉 amd64 摘要；compose 里的演示钥匙是明文。
+9. **阶段 7 / 8 部署留白**：默认仍是单副本；容器 root、无资源限额、无只读根文件系统；第三方镜像钉 amd64 摘要；compose 里的演示钥匙是明文；多副本是单机 `--scale` 而非编排（不自动补副本、无跨宿主）。
 
-### 3.3 待你拍板的事（历史遗留 + 阶段 8 相关）
+### 3.3 待你拍板的事（历史遗留）
 
 - 是否给 CI 加 `--cov-fail-under`（比如 90%），把覆盖率变成硬门禁？
 - 是否把 `bandit` / `pip-audit` 也接进 CI？
-- 阶段 8「多副本」的目标形态：**单机 compose 多实例**（够用来验证滚动不中断），还是**直接上 K8s**（那要引 kind/helm 一类工具，本机目前只有 Docker Desktop）？
+- 是否需要真正的编排层：阶段 8 已用**单机 compose 多实例**验证了滚动不中断；再往上才是 K8s（要引 kind/helm 一类工具）。
 - 技术栈当年没有被明确拍板（规范首选 Python + FastAPI，实际就按它落地了）。现在换栈的代价已经很大，**默认继续 Python + FastAPI**；若要换，这是最后一个低成本窗口。
 
 ---
@@ -144,9 +144,9 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 ### 4.1 新会话的开场白（可直接复制）
 
 > 项目在 `D:\DSh\driver-platform-v2`（或新设备上的路径），GitHub 是 `qw2007/DRiver-api`，已同步到 `master`。
-> 先读 `docs/handoff.md`、`docs/task-brief.md`、`CHANGELOG.md` 与 `docs/stages/stage-7.md` 了解现状，
-> 然后开始阶段 8「生产加固」：先按固定五件套写 `docs/stages/stage-8.md`，再落地代码，
-> 结束时 `ruff check .` / `ruff format --check src tests deploy examples` / `mypy` / `pytest` 全绿并保持 CI 可跑。
+> 先读 `docs/handoff.md`、`docs/task-brief.md`、`CHANGELOG.md` 与 `docs/stages/stage-8.md` 了解现状（九阶段已全部完成），
+> 然后按第 3.2 / 3.3 节挑下一步：先拍板待定项，或直接开工最接近生产的那几条（镜像瘦身与非 root 运行、`/metrics` 收进内网、PostgreSQL 插件）。
+> 每阶段的固定动作不变：先出设计说明再落地，结束时 `ruff check .` / `ruff format --check src tests deploy examples` / `mypy` / `pytest` 全绿并保持 CI 可跑。
 
 如果要开长任务，可以用 `/goal` 并把上面这段作为目标；本仓库之前的 goal 目标原文是：
 
@@ -196,13 +196,14 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 | [`CHANGELOG.md`](../CHANGELOG.md) | 每个阶段的目标 / 交付物 / 关键决策与理由 / 验收证据 + 「当前状态」+「已知限制（汇总）」 |
 | [`task-brief.md`](task-brief.md) | 原始任务书：九阶段验收标准、八条原则、技术栈、交付规范 |
 | [`environment.md`](environment.md) | 本机工具清单、提权清单、GitHub 与 Docker 的网络解法、一分钟自检 |
-| `stages/stage-0..7.md` | 各阶段设计说明（固定章节：选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署方案 / 非目标 / 已知限制 / 验收证据） |
+| `stages/stage-0..8.md` | 各阶段设计说明（固定章节：选型理由 / 模块设计 / 接口定义 / 关键代码 / 测试与部署方案 / 非目标 / 已知限制 / 验收证据） |
 | [`../docker-compose.yml`](../docker-compose.yml) | 一条命令起全平台（平台 + Prometheus + Grafana，含演示钥匙与健康检查） |
-| [`../Dockerfile`](../Dockerfile) | 分层构建 + `HEALTHCHECK` + 入口脚本 `exec` |
-| `../deploy/` | 容器入口脚本、演示库种子、Prometheus 抓取配置、Grafana provisioning |
+| [`../docker-compose.scale.yml`](../docker-compose.scale.yml) | 阶段 8 overlay：摘掉平台端口 + nginx 网关（配合 `--scale driver-platform=N` 使用） |
+| [`../Dockerfile`](../Dockerfile) | 分层构建 + `HEALTHCHECK` + 入口脚本 `exec` + 优雅停机窗口与构建戳 |
+| `../deploy/` | 容器入口脚本、演示库种子（原子安装）、Prometheus 抓取配置、Grafana provisioning、nginx 网关配置、`rollout.py`（滚动替换）与 `traffic_probe.py`（流量探针） |
 | [`observability/`](observability) | 本机联调用的 Prometheus 配置与 Grafana 面板 JSON（同一份面板也挂在 compose 里） |
-| `../src/driver_platform/` | 源码：`main.py`（应用装配）、`config.py`（环境变量与校验）、`tools/`（契约/注册表/执行器）、`plugins/`（宿主/契约/catalog/SQLite/remote）、`protocols/`（MCP 与 OpenAI Schema）、`security/`、`observability/`、`api/` |
-| `../tests/` | 20 个测试文件（另加 `conftest.py`）/ 256 个用例 |
+| `../src/driver_platform/` | 源码：`main.py`（应用装配 + lifespan）、`config.py`（环境变量与校验）、`tools/`（契约/注册表/执行器）、`plugins/`（宿主/契约/catalog/SQLite/remote）、`protocols/`（MCP 与 OpenAI Schema）、`security/`、`observability/`、`api/` |
+| `../tests/` | 23 个测试文件（另加 `conftest.py`）/ 276 个用例 |
 | [`../examples/remote_echo_service.py`](../examples/remote_echo_service.py) | 阶段 6 的远端参考实现，用于人工验收远程插件 |
 
 环境变量全集（代码里唯一真话在 `src/driver_platform/config.py` 与 `security/keys.py`）：
@@ -213,11 +214,15 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 ## 7. 一分钟自检（判断"接上了"没有）
 
 ```bash
-git log --oneline -1                     # 应看到 7f34f26 或更新的提交
-.venv/bin/pytest -q                      # 256 passed（或更多）
+git log --oneline -1                     # 应看到最新提交（阶段 8 之后）
+.venv/bin/pytest -q                      # 276 passed（或更多）
 .venv/bin/ruff check .                   # All checks passed
 docker compose up -d --build && docker compose ps
 curl -s http://127.0.0.1:8000/health     # {"status":"ok"}
+
+# 想验多副本与滚动（阶段 8）：
+docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3
+python deploy/traffic_probe.py --seconds 20 --workers 4   # failed 应为 0
 ```
 
-四项都正常，就说明代码、环境、门禁、部署四条线都接上了，可以直接开始阶段 8。
+四项都正常，就说明代码、环境、门禁、部署四条线都接上了；九阶段目标已收口，接下来按第 3.2 / 3.3 节挑活。

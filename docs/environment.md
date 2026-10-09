@@ -148,6 +148,26 @@ Remove-Item -Recurse -Force pytest-of-Administrator
 
 **残留会落在工作区根部**：本机 `tempfile.gettempdir()` 取不到可用的 `TEMP`，退化成当前目录，于是 pytest 的 basetemp 变成 `D:\DSh\driver-platform-v2\pytest-of-Administrator\`（提权跑也一样）。`.gitignore` 已收录 `pytest-of-*/` 与 `pytest-cache-files-*/`，不会误提交；但受限模式删不掉它，清理必须提权。
 
+### 4.3.1 提权也救不了 **Python 子进程**（阶段 8 实测）
+
+阶段 8 的本机滚动验收踩到一条更窄的限制：**同一个提权命令里，`pwsh` / `cmd` 子进程不受限，Python 子进程受限。**
+
+| 在 `danger-full-access` 下执行 | 结果 |
+| --- | --- |
+| `docker compose build driver-platform`（直接执行） | 成功 |
+| `cmd /c "docker compose build driver-platform"` | 成功 |
+| `cmd /c "echo x > C:\Users\Administrator\.docker\buildx\.probe-write"` | 成功 |
+| `.venv\Scripts\python.exe -c "open(r'C:\Users\Administrator\.docker\buildx\.probe-write','w')"` | `PermissionError: [Errno 13] Permission denied` |
+| `.venv\Scripts\python.exe deploy\rollout.py --build` | `RuntimeError: 命令失败（exit 1）：docker compose … build`，Docker 原文 `open C:\Users\Administrator\.docker\buildx\.lock: Access is denied.` |
+
+即：Python 进程既写不了工作区外的路径，也打不开 Docker 命名管道（`.lock` 的 ACL 本身正常，`icacls` 显示 SYSTEM / Administrators / Administrator 全 `F`）。**后台任务同样受限。**
+
+应对（阶段 8 采用）：本机验收用**等价的 PowerShell 序列**（`deploy/rollout.py` 的手工版），
+`deploy/rollout.py` / `deploy/traffic_probe.py` 保持为普通环境与 CI 里的自动化路径（CI 只做静态校验，见 `docs/stages/stage-8.md`）。
+另外本机 shell 是 **PowerShell 5.1**：`.ps1` 必须带 BOM，否则中文按 GBK 解码会报
+`Missing closing '}' in statement block`；补 BOM 用
+`[System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding($true)))`。
+
 ### 4.4 根治办法（需要人工操作）
 
 把本机 DSH 的**权限模式切成 `danger-full-access`**，沙箱不再介入，上述限制（提权、TEMP、管道、`0o700`）全部消失。代价是失去沙箱对文件写入的保护——是否切换是人的决定，本文只记录事实与影响面。CI 不受影响。
