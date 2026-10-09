@@ -280,6 +280,10 @@ python deploy/rollout.py --replicas 3 --seconds 60
 新增用例分布：`tests/test_compat.py`（契约兼容 9）、`tests/test_lifecycle.py`（lifespan 收尾 2）、
 `tests/test_scale_config.py`（部署描述静态校验 + 探针自测 12）；`tests/test_deploy_config.py` 改 1 增 1。
 
+CI（提交 `894ff44`，[run 37953653712](https://github.com/qw2007/DRiver-api/actions/runs/37953653712)）：
+`test`（ruff check → ruff format → mypy → pytest）与 `deploy`（compose 与 provisioning 校验 →
+**新增的多副本 overlay / nginx -t / 脚本 py_compile 校验** → 构建 → 起服务 → 健康 → 两个冒烟）两个任务均 success。
+
 ### 2. 本机多副本 + 滚动替换（0 失败）
 
 `.tmp/rolling.ps1` 是 `deploy/rollout.py` 的等价手工序列（为什么不用脚本见第 5 节）。

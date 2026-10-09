@@ -14,7 +14,7 @@
 | 技术栈 | Python 3.11+（CI 与实测 3.14）、FastAPI、pydantic v2、uvicorn；MCP 走官方 SDK（可选依赖） |
 | 进度 | **阶段 0–8 已完成并推送** —— 任务书的九阶段验收标准全部落地；后续是加固与发布流程（见第 3 节） |
 | 门禁现状 | `pytest` **276 passed**、覆盖率 **95%**（1257 语句 / 65 未覆盖）；`ruff check .` / `ruff format --check src tests deploy examples`（63 files）/ `mypy`（34 files）全绿 |
-| CI | `test` 与 `deploy` 两个任务在 GitHub Actions 上全绿（[run 36834191494](https://github.com/qw2007/DRiver-api/actions/runs/36834191494)，提交 `7f34f26`） |
+| CI | `test` 与 `deploy` 两个任务在 GitHub Actions 上全绿（[run 37953653712](https://github.com/qw2007/DRiver-api/actions/runs/37953653712)，提交 `894ff44`；`deploy` 里已含多副本 overlay / `nginx -t` / 验收脚本语法的静态校验） |
 | 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3` |
 | 下一步 | 九阶段目标已收口；继续做的话先拍板第 3.3 节的四项，再看阶段 8 说明里最接近生产的两条限制（镜像瘦身/非 root、`/metrics` 收进内网） |
 
