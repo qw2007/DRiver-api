@@ -11,10 +11,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from driver_platform.errors import InvalidConfigurationError, UnknownPluginError
 from driver_platform.plugins.base import Plugin
+from driver_platform.plugins.pho_note import PhoNotePlugin
 from driver_platform.plugins.sqlite import SqlitePlugin
 
 if TYPE_CHECKING:  # 只在类型检查期 import：config 会反过来 import 远程插件（见下）
@@ -29,7 +31,15 @@ def _build_sqlite(settings: Settings) -> Plugin:
     return SqlitePlugin(settings.sqlite_path)
 
 
-PLUGIN_FACTORIES: dict[str, Callable[[Settings], Plugin]] = {"sqlite": _build_sqlite}
+def _build_pho_note(settings: Settings) -> Plugin:
+    # 目录默认落在用户主目录下：跨平台可写，且不把某台机器的盘符写进代码。
+    return PhoNotePlugin(settings.notes_dir or str(Path.home() / "PhoNote"))
+
+
+PLUGIN_FACTORIES: dict[str, Callable[[Settings], Plugin]] = {
+    "sqlite": _build_sqlite,
+    "pho_note": _build_pho_note,
+}
 
 
 def build_plugin(plugin_id: str, settings: Settings) -> Plugin:

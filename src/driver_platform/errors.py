@@ -163,6 +163,17 @@ class PermissionDeniedError(PlatformError):
     status_code = 403
 
 
+class NoteNotFoundError(PlatformError):
+    """要给 PhoNote 笔记做操作，但那个节点不存在（或不是笔记）。
+
+    与 ``tool_not_found`` 分开：前者是「工具没注册」，后者是「数据里没这条」，
+    调用方要做的补救完全不同（换工具 vs 换 id）。
+    """
+
+    code = "note_not_found"
+    status_code = 404
+
+
 class RemotePluginDisabledError(PlatformError):
     """远程插件管理接口没打开（``DRIVER_REMOTE_PLUGIN_ENABLED`` 默认关）。
 
