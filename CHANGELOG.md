@@ -22,6 +22,7 @@
 | — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 | — PhoNote 插件 P0 | 见文末 | 2026-11-10 | 见文末 | 六个 `note_*` 工具；截图 → 缓冲区 → 组笔记 → 读回 |
 | — PhoNote 插件 P1 | 见文末 | 2026-11-10 | 见文末 | 十七个工具 + `/notes/api/*` REST 层；树增删改移、批注、版本回滚、导出 |
+| — PhoNote 插件 P2 | 见文末 | 2026-11-10 | 见文末 | AI 总结、讨论与增量补丁（`find` 唯一匹配才套用）；manual 模式不需要 key |
 
 ---
 
@@ -278,10 +279,31 @@
 
 ---
 
+## 非阶段交付：PhoNote 插件 P2（2026-11-10）
+
+**目标**：把「看网课」这条链路补到能自己写笔记——让模型读图读文给出总结与增量补丁，人在讨论区继续追问，补丁逐条确认后落盘。对应设计文档 §8。
+
+**交付物**：新建 `plugins/pho_note/ai.py`（`AIConfig`、`LLMProvider` 协议、OpenAI 兼容 / Anthropic / manual 三实现、`parse_reply`、`apply_edits`、`NoteAI` 门面）；`store.py` 加 `messages` 表（`SCHEMA_VERSION=3`）与 `add_message`/`list_messages`/`media_bytes`；`tools.py` 加五个 AI 工具（总数 22）；`api.py` 加四个 AI 端点；`config.py` 加五个 `DRIVER_NOTES_LLM*` 开关与校验；`errors.py` 加 `ai_not_configured`(400)/`ai_unavailable`(502)/`ai_reply_unparsable`(422)；`tests/test_pho_note_p2.py`（24 例）；壳侧讨论区接上总结/追问/补丁预览。
+
+**关键决策与理由**：
+- **模型只回补丁、不回全文**：`{"summary", "edits":[{"find","replace"}]}` 让「模型改了什么」可以逐条展示与拒绝；回整个正文会让用户在长笔记里找不到改动点；
+- **`find` 必须恰好出现一次**：出现 0 次说明模型记错了原文，出现 2 次以上不知道该改哪处——两种都整条跳过并进 `skipped`，宁可不改也不改错；
+- **`find == ""` 约定为追加**：这是唯一不依赖「原文里有锚点」的改法，总结类补丁常用；
+- **manual 模式是一等公民**：不联网、不花额度，把正文 + 批注 + 图片路径打成上下文包，人粘给网页版模型再粘回来（`note_ingest_ai_reply`）——没有 API key 也能用完整条链路；
+- **三模式的 HTTP 出口集中到 `_post`**：超时、连接失败、非 2xx、非 JSON 都映成 `ai_unavailable`，且**不回显响应体**（可能含原文与 key 指纹）；测试用 `httpx.MockTransport` 注入，零网络；
+- **出网白名单从一处变两处**：`tests/test_protocol_isolation.py` 现在允许 `plugins/remote.py` 与 `plugins/pho_note/ai.py` 两处 import httpx，加第三处必须改这张表；
+- **讨论历史落库而不是只放内存**：`messages` 表按 `created_at` 升序读回，壳关掉再开还能看到上下文；
+- **REST 与工具共用处理器**：`/summarize`、`/chat` 直接调 `run_summarize`/`run_chat`，避免「HTTP 一套逻辑、工具另一套」慢慢分叉。
+
+**验收证据**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **73 files**；`mypy` → Success: no issues found in **40 source files**；`pytest` → exit 0，**335 passed**，覆盖率 **95%**（2221 语句 / 120 未覆盖，`ai.py` 92%、`api.py` 92%、`tools.py` 98%、`store.py` 94%）；真实 uvicorn（8011，`DRIVER_NOTES_LLM=manual`）：`/v1/tools` 23 个工具 → `POST /notes/api/nodes` 建 `nod_dd35be07a33b40c8` → `/summarize` 返回 `mode=manual copy_len=281` → `note_ingest_ai_reply` 套用补丁后 `body=第二行：补丁` 且 `revisions` 多一条 `ai-reply` → `/messages` 有一条 assistant。
+
+**已知限制**：`ai.py` 只实现两家协议，没有重试、限流与流式；随请求最多带 6 张图（`DRIVER_NOTES_LLM_MAX_IMAGES`），长笔记可能超出模型上下文；批注仍只以 JSON 存锚点；壳的 Electron 仍未在本机启动过、`npm install` 未验证。
+
+---
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 2 个非阶段交付（PhoNote 插件 P0/P1，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **71 files** already formatted；`mypy` → Success: no issues found in **39 source files**；`pytest` → **311 passed**，覆盖率 **95%**（1856 语句 / 98 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 3 个非阶段交付（PhoNote 插件 P0/P1/P2，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **73 files** already formatted；`mypy` → Success: no issues found in **40 source files**；`pytest` → **335 passed**，覆盖率 **95%**（2221 语句 / 120 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
 - **下一步**：九阶段目标已收口。要继续往下走，先处理 [`docs/handoff.md`](docs/handoff.md) 第 3.3 节的待拍板项（CI 是否加 `--cov-fail-under`、bandit/pip-audit 是否进 CI、是否需要真正的编排层、包版本与发布流程），以及阶段 8 已知限制里最接近生产的两条：镜像瘦身/非 root 运行、`/metrics` 收进内网。
 
@@ -297,4 +319,4 @@
 8. 部署的默认形态是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
 9. 多副本是**单机 Compose 的 `--scale`**、不是编排（不自动补副本、无滚动策略、跨宿主无从谈起），nginx 解析有 5 秒窗口，重试对非幂等请求也开着，多副本共享同一份只读数据卷，探针只衡量成功率，`/metrics` 经网关暴露且仍无鉴权，远程插件的 HTTP 客户端会继承宿主机代理设置，详见阶段 8 说明；
 10. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许；本机 DSH 会话里 **Python 子进程**连 `danger-full-access` 都解不开（写不了工作区外、打不开 Docker 命名管道），所以本机滚动验收用等价 PowerShell 序列替代 `deploy/rollout.py`（见阶段 8 说明的验收证据第 5 节）。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
-11. **PhoNote 插件（P0/P1）**：单机单用户（SQLite + 本地文件，WebDAV 同步属 P3）；批注锚点里的选中文字/图片区域坐标要等 P2 的 UI 补，REST 只存 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 总结/讨论与同步未接；多屏只截第一屏；壳的 `npm install` 未在本机验证。
+11. **PhoNote 插件（P0/P1/P2）**：单机单用户（SQLite + 本地文件，WebDAV 同步属 P3）；批注锚点里的选中文字/图片区域坐标仍是占位 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 只有 openai/anthropic/manual 三档、无重试与流式、每次最多 6 张图；多屏只截第一屏；壳的 `npm install` 与 Electron 启动都未在本机验证。

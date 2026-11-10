@@ -188,6 +188,27 @@ class NodeMoveInvalidError(PlatformError):
     status_code = 422
 
 
+class AiNotConfiguredError(PlatformError):
+    """AI 没开或缺配置。400 而不是 500：调用方改环境变量就能恢复。"""
+
+    code = "ai_not_configured"
+    status_code = 400
+
+
+class AiUnavailableError(PlatformError):
+    """模型服务连不上/返回异常。502：这是我们上游的故障，不是请求写错。"""
+
+    code = "ai_unavailable"
+    status_code = 502
+
+
+class AiReplyUnparsableError(PlatformError):
+    """模型回复不符合约定的 JSON 补丁格式（可能是被截断或跑偏）。"""
+
+    code = "ai_reply_unparsable"
+    status_code = 422
+
+
 class RemotePluginDisabledError(PlatformError):
     """远程插件管理接口没打开（``DRIVER_REMOTE_PLUGIN_ENABLED`` 默认关）。
 

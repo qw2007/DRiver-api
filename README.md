@@ -137,23 +137,35 @@ curl -X DELETE http://127.0.0.1:8000/v1/plugins/remote/echo_farm -H "X-API-Key: 
 
 `DRIVER_REMOTE_PLUGINS='id=base_url'` 可以在**启动期**装载远程插件；此时远端连不上进程就起不来——这是刻意的（宁可起不来，也不要带着一半坏工具对外服务），代价是部署编排里必须安排启动顺序。
 
-### 接笔记插件 pho_note（PhoNote P0/P1）
+### 接笔记插件 pho_note（PhoNote P0/P1/P2）
 
-`pho_note` 是 PhoNote 桌面应用的领域插件：截图进缓冲区 → 任意多图组成笔记 → 读回/改/批注/版本。它只依赖平台契约，UI 与全局热键在[独立仓库](https://github.com/qw2007/PhoNote)的 Electron 壳里。
+`pho_note` 是 PhoNote 桌面应用的领域插件：截图进缓冲区 → 任意多图组成笔记 → 读回/改/批注/版本 → AI 总结、讨论与增量补丁。它只依赖平台契约，UI 与全局热键在[独立仓库](https://github.com/qw2007/PhoNote)的 Electron 壳里。
 
 ```bash
 DRIVER_PLUGINS=pho_note DRIVER_NOTES_DIR="$HOME/PhoNote" DRIVER_NOTES_UI=1 \
+DRIVER_NOTES_LLM=manual \
   .venv/Scripts/python -m uvicorn driver_platform.main:app --host 127.0.0.1 --port 8000
 
-curl http://127.0.0.1:8000/v1/tools        # echo + 十七个 note_* 工具
+curl http://127.0.0.1:8000/v1/tools        # echo + 二十二个 note_* 工具
 curl http://127.0.0.1:8000/notes/api/tree  # 给壳用的 REST 层（DRIVER_NOTES_UI=1 才挂）
 ```
 
-十七个工具：树（`note_tree`/`note_node_create`/`note_node_rename`/`note_node_move`/`note_node_delete`）、截图缓冲（`note_add_capture`/`note_list_captures`）、笔记（`note_compose`/`note_get`/`note_list`/`note_update`/`note_set_images`）、批注（`note_annotate`/`note_annotate_delete`）、版本（`note_revisions`/`note_rollback`）、导出（`note_export`）。
+二十二个工具：树（`note_tree`/`note_node_create`/`note_node_rename`/`note_node_move`/`note_node_delete`）、截图缓冲（`note_add_capture`/`note_list_captures`）、笔记（`note_compose`/`note_get`/`note_list`/`note_update`/`note_set_images`）、批注（`note_annotate`/`note_annotate_delete`）、版本（`note_revisions`/`note_rollback`）、导出（`note_export`）、AI（`note_summarize`/`note_chat`/`note_messages`/`note_apply_patch`/`note_ingest_ai_reply`）。
 
-数据落在 `DRIVER_NOTES_DIR`（默认 `~/PhoNote`）：`phonote.db`（自由文件树 + 图片元数据 + 批注 + 版本）+ `media/ab/cd/<sha256>.<ext>`（内容寻址，同一张图只存一份）。
+数据落在 `DRIVER_NOTES_DIR`（默认 `~/PhoNote`）：`phonote.db`（自由文件树 + 图片元数据 + 批注 + 版本 + 消息）+ `media/ab/cd/<sha256>.<ext>`（内容寻址，同一张图只存一份）。
 
-REST 层（`/notes/api/*`，挂载由 `DRIVER_NOTES_UI=1` 控制）给壳用：读操作要 `notes_read`、写操作要 `notes_write` 作用域；上传仍是 JSON base64（不引 `python-multipart`），单图上限 8 MB。AI 总结与 WebDAV 同步仍在 P2/P3。
+REST 层（`/notes/api/*`，挂载由 `DRIVER_NOTES_UI=1` 控制）给壳用：读操作要 `notes_read`、写操作要 `notes_write` 作用域；上传仍是 JSON base64（不引 `python-multipart`），单图上限 8 MB。AI 相关端点：`GET /notes/{id}/messages`、`POST /notes/{id}/summarize`、`POST /notes/{id}/chat`、`POST /notes/{id}/apply`。
+
+AI 按 `DRIVER_NOTES_LLM` 四选一：
+
+| 取值 | 行为 | 需要的配置 |
+| --- | --- | --- |
+| `off`（默认） | 调 AI 端点直接 400 `ai_not_configured` | 无 |
+| `openai` | 打 OpenAI 兼容 `/chat/completions`（可指向任何兼容网关） | `DRIVER_NOTES_LLM_API_KEY`，可选 `_BASE_URL`/`_MODEL`（默认 `gpt-4o-mini`） |
+| `anthropic` | 打 `/v1/messages` | `DRIVER_NOTES_LLM_API_KEY`，可选 `_MODEL`（默认 `claude-sonnet-4-5`） |
+| `manual` | 不联网：把笔记正文 + 批注 + 图片路径打成上下文包返回，由人粘给网页版模型 | 无 |
+
+模型被要求只回 `{"summary": "...", "edits": [{"find": "...", "replace": "..."}]}`；`find` 必须在正文里**恰好出现一次**才会被套用，否则整条跳过并在返回的 `skipped` 里报出来。`DRIVER_NOTES_LLM_MAX_IMAGES`（默认 6，1–20）控制随请求附几张截图。WebDAV 同步仍在 P3。
 
 ### 一条命令起全平台（阶段 7）
 
@@ -221,14 +233,14 @@ src/driver_platform/
   api/plugins.py        GET /v1/plugins、POST /v1/plugins/remote、DELETE /v1/plugins/remote/{plugin_id}
   tools/                Tool 契约、ToolRegistry、executor（HTTP 与 MCP 共用执行路径）、echo 内置工具
   plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件、remote（远程插件与 HTTP 客户端）、
-                        pho_note（PhoNote 笔记插件：树 / 截图缓冲区 / 组笔记 / 批注 / 版本 / REST）
+                        pho_note（PhoNote 笔记插件：树 / 截图缓冲区 / 组笔记 / 批注 / 版本 / AI / REST）
   protocols/            协议适配器：__init__（协议开关 + 路由装配）、openai_schema（纯翻译）、mcp（stdio 服务端）、mcp_server（进程入口）、routes
   observability/        request_id 上下文、四个指标、结构化日志（text/json）、ASGI 中间件、/metrics 路由
 examples/               可运行的远端插件参考实现（remote_echo_service.py，供本机人工验收）
 deploy/                  容器入口脚本、演示库种子（原子安装）、Prometheus 抓取配置、Grafana provisioning、
                          nginx 网关配置、多副本滚动脚本（rollout）与流量探针（traffic_probe）
 tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限/可观测性/远程插件/部署描述/
-                        进程生命周期/契约兼容/PhoNote 存储、工具与 REST 测试
+                        进程生命周期/契约兼容/PhoNote 存储、工具、AI 与 REST 测试
 .github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest，外加部署冒烟（compose 校验/构建/健康检查）
                         与多副本配置静态校验（overlay 合并、nginx -t、验收脚本语法）
 docker-compose.yml       阶段 7：一条命令起全平台（driver-platform + Prometheus + Grafana，第三方镜像钉摘要）

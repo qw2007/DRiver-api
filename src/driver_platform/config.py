@@ -32,6 +32,8 @@ from driver_platform.observability.logging import (
     LOG_FORMAT_TEXT,
     LOG_FORMATS,
 )
+from driver_platform.plugins.pho_note.ai import DEFAULT_MAX_IMAGES
+from driver_platform.plugins.pho_note.ai import MODES as AI_MODES
 from driver_platform.plugins.remote import DEFAULT_TIMEOUT as DEFAULT_REMOTE_TIMEOUT
 from driver_platform.plugins.remote import normalize_base_url
 from driver_platform.security.keys import ENV_API_KEYS, ApiKey, parse_api_keys
@@ -46,6 +48,11 @@ ENV_PLUGINS = "DRIVER_PLUGINS"
 ENV_SQLITE_PATH = "DRIVER_SQLITE_PATH"
 ENV_NOTES_DIR = "DRIVER_NOTES_DIR"
 ENV_NOTES_UI = "DRIVER_NOTES_UI"
+ENV_NOTES_LLM = "DRIVER_NOTES_LLM"
+ENV_NOTES_LLM_BASE_URL = "DRIVER_NOTES_LLM_BASE_URL"
+ENV_NOTES_LLM_API_KEY = "DRIVER_NOTES_LLM_API_KEY"
+ENV_NOTES_LLM_MODEL = "DRIVER_NOTES_LLM_MODEL"
+ENV_NOTES_LLM_MAX_IMAGES = "DRIVER_NOTES_LLM_MAX_IMAGES"
 ENV_PROTOCOLS = "DRIVER_PROTOCOLS"
 ENV_METRICS_ENABLED = "DRIVER_METRICS_ENABLED"
 ENV_LOG_LEVEL = "DRIVER_LOG_LEVEL"
@@ -68,6 +75,11 @@ class Settings:
     sqlite_path: str | None = None
     notes_dir: str = ""
     notes_ui: bool = False
+    notes_llm: str = "off"
+    notes_llm_base_url: str = ""
+    notes_llm_api_key: str = ""
+    notes_llm_model: str = ""
+    notes_llm_max_images: int = 6
     protocols: tuple[str, ...] = ()
     auth_mode: str = AUTH_MODE_OFF
     api_keys: tuple[ApiKey, ...] = ()
@@ -99,6 +111,14 @@ class Settings:
             raise InvalidConfigurationError(
                 f"{ENV_REMOTE_TIMEOUT} 必须是大于 0 的秒数，收到：{self.remote_timeout!r}"
             )
+        if self.notes_llm not in AI_MODES:
+            raise InvalidConfigurationError(
+                f"未知 AI 模式：{self.notes_llm!r}；可用：{', '.join(AI_MODES)}"
+            )
+        if not 1 <= self.notes_llm_max_images <= 20:
+            raise InvalidConfigurationError(
+                f"{ENV_NOTES_LLM_MAX_IMAGES} 必须在 1..20 之间，收到：{self.notes_llm_max_images!r}"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -114,6 +134,11 @@ class Settings:
             sqlite_path=environ.get(ENV_SQLITE_PATH) or None,
             notes_dir=environ.get(ENV_NOTES_DIR, "").strip(),
             notes_ui=_parse_bool(ENV_NOTES_UI, environ.get(ENV_NOTES_UI, "")),
+            notes_llm=(environ.get(ENV_NOTES_LLM, "").strip().lower() or "off"),
+            notes_llm_base_url=environ.get(ENV_NOTES_LLM_BASE_URL, "").strip(),
+            notes_llm_api_key=environ.get(ENV_NOTES_LLM_API_KEY, "").strip(),
+            notes_llm_model=environ.get(ENV_NOTES_LLM_MODEL, "").strip(),
+            notes_llm_max_images=_parse_max_images(environ.get(ENV_NOTES_LLM_MAX_IMAGES, "")),
             protocols=protocols,
             auth_mode=environ.get(ENV_AUTH_MODE, AUTH_MODE_OFF).strip() or AUTH_MODE_OFF,
             api_keys=parse_api_keys(environ.get(ENV_API_KEYS, "")),
@@ -148,6 +173,23 @@ def _parse_bool(name: str, raw: str) -> bool:
 def _split(raw: str) -> tuple[str, ...]:
     """逗号分隔的开关值：去空白、丢空项，保持书写顺序。"""
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_max_images(raw: str) -> int:
+    """一次请求最多附几张图：空值取默认，写错（非整数、越界）一律启动即失败。"""
+
+    value = raw.strip()
+    if not value:
+        return DEFAULT_MAX_IMAGES
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise InvalidConfigurationError(
+            f"{ENV_NOTES_LLM_MAX_IMAGES} 必须是整数，收到：{raw!r}"
+        ) from exc
+    if not 1 <= count <= 20:
+        raise InvalidConfigurationError(f"{ENV_NOTES_LLM_MAX_IMAGES} 必须在 1..20，收到：{raw!r}")
+    return count
 
 
 def _parse_timeout(raw: str) -> float:

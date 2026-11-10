@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response
@@ -23,8 +23,10 @@ from driver_platform.errors import (
     PermissionDeniedError,
     PluginNotFoundError,
 )
+from driver_platform.plugins.pho_note.ai import NoteAI
 from driver_platform.plugins.pho_note.plugin import PhoNotePlugin
 from driver_platform.plugins.pho_note.store import Store
+from driver_platform.plugins.pho_note.tools import run_chat, run_patch, run_summarize
 from driver_platform.security.http import PrincipalDep
 from driver_platform.security.keys import Principal
 
@@ -38,12 +40,25 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 # --------------------------------------------------------------------- 依赖
 
 
-def _store(request: Request) -> Store:
+def _plugin(request: Request) -> PhoNotePlugin:
     host = getattr(request.app.state, "plugins", None)
     plugin = host.get("pho_note") if host is not None else None
     if not isinstance(plugin, PhoNotePlugin) or plugin.store is None:
         raise PluginNotFoundError("PhoNote 插件未装载")
-    return plugin.store
+    return plugin
+
+
+def _store(request: Request) -> Store:
+    # _plugin 已经挡住了「插件没装载」；cast 而不是 assert：断言在 -O 下会被抹掉，
+    # 而这里要的是类型收窄，不是运行期检查。
+    return cast(Store, _plugin(request).store)
+
+
+def _ai(request: Request) -> NoteAI:
+    ai = _plugin(request).ai
+    if ai is None:
+        raise PluginNotFoundError("PhoNote 插件未装载")
+    return ai
 
 
 def _guard(principal: Principal, scope: str) -> None:
@@ -63,6 +78,7 @@ def write_guard(principal: PrincipalDep) -> None:
 
 
 StoreDep = Annotated[Store, Depends(_store)]
+AiDep = Annotated[NoteAI, Depends(_ai)]
 Read = Depends(read_guard)
 Write = Depends(write_guard)
 
@@ -138,6 +154,25 @@ class RollbackBody(BaseModel):
     model_config = {"extra": "forbid"}
 
     revision_id: str = Field(min_length=1)
+
+
+class SummarizeBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    instruction: str = Field(default="", max_length=2000)
+
+
+class ChatBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class ApplyBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    find: str = Field(default="")
+    replace: str = Field(default="")
 
 
 # --------------------------------------------------------------------- 路由
@@ -230,6 +265,30 @@ def build_router() -> APIRouter:
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
         )
+
+    @router.get("/notes/{note_id}/messages", dependencies=[Read])
+    def messages(
+        store: StoreDep, note_id: str, limit: Annotated[int, Query(ge=1, le=200)] = 50
+    ) -> list[dict[str, Any]]:
+        return store.list_messages(note_id, limit=limit)
+
+    @router.post("/notes/{note_id}/summarize", dependencies=[Write])
+    async def summarize(
+        store: StoreDep, ai: AiDep, note_id: str, body: Annotated[SummarizeBody, Body()]
+    ) -> dict[str, Any]:
+        return await run_summarize(store, ai, note_id, body.instruction)
+
+    @router.post("/notes/{note_id}/chat", dependencies=[Write])
+    async def chat(
+        store: StoreDep, ai: AiDep, note_id: str, body: Annotated[ChatBody, Body()]
+    ) -> dict[str, Any]:
+        return await run_chat(store, ai, note_id, body.message)
+
+    @router.post("/notes/{note_id}/apply", dependencies=[Write])
+    def apply_patch(
+        store: StoreDep, note_id: str, body: Annotated[ApplyBody, Body()]
+    ) -> dict[str, Any]:
+        return run_patch(store, note_id, body.find, body.replace)
 
     @router.get("/captures", dependencies=[Read])
     def list_captures(

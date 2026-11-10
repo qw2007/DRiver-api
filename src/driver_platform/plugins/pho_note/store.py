@@ -32,7 +32,7 @@ from driver_platform.errors import (
     NoteNotFoundError,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: 建库脚本。``user_version`` 是迁移版本号，P1 起每加一版就在这里追加一段。
 _SCHEMA = """
@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS revisions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_revisions_note ON revisions (note_id, created_at);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES nodes (id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    body TEXT NOT NULL,
+    revision_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_note ON messages (note_id, created_at);
 """
 
 #: 认得出的图片格式：魔数 → (媒体类型, 后缀)。壳上传的是 WebP，但 P0 不强制转码。
@@ -552,6 +563,59 @@ class Store:
             )
         return self.get_note(note_id)
 
+    # ------------------------------------------------------------- 讨论消息
+
+    def add_message(
+        self,
+        note_id: str,
+        *,
+        role: str,
+        body: str,
+        revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        """往笔记的讨论区追加一条消息（user 提问 / assistant 回复）。"""
+
+        if role not in {"user", "assistant"}:
+            raise InvalidArgumentsError(f"role 只能是 user 或 assistant，收到：{role!r}")
+        with self._lock, self._transaction(self._connection) as connection:
+            self._node_row(connection, note_id)
+            message_id = _new_id("msg")
+            connection.execute(
+                "INSERT INTO messages (id, note_id, role, body, revision_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (message_id, note_id, role, body, revision_id, _now()),
+            )
+        return {
+            "message_id": message_id,
+            "note_id": note_id,
+            "role": role,
+            "body": body,
+            "revision_id": revision_id,
+        }
+
+    def list_messages(self, note_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            self._node_row(self._connection, note_id)
+            rows = self._connection.execute(
+                "SELECT * FROM messages WHERE note_id = ? ORDER BY created_at ASC, rowid ASC "
+                "LIMIT ?",
+                (note_id, limit),
+            ).fetchall()
+        return [_message_dict(row) for row in rows]
+
+    # ------------------------------------------------------------- 媒体字节
+
+    def media_bytes(self, capture_id: str) -> tuple[str, bytes]:
+        """给 AI 附图用：返回 (媒体类型, 原字节)。"""
+
+        capture = self.get_capture(capture_id)
+        target = self.root / capture["path"]
+        try:
+            data = target.read_bytes()
+        except OSError as exc:
+            raise NoteNotFoundError(f"图片文件丢失：{capture['path']}") from exc
+        return capture["media_type"], data
+
     # ------------------------------------------------------------- 导出
 
     def export_markdown(self, note_id: str) -> dict[str, Any]:
@@ -731,6 +795,17 @@ def _revision_dict(row: sqlite3.Row) -> dict[str, Any]:
         "note_id": row["note_id"],
         "body_md": row["body_md"],
         "reason": row["reason"],
+        "created_at": row["created_at"],
+    }
+
+
+def _message_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "message_id": row["id"],
+        "note_id": row["note_id"],
+        "role": row["role"],
+        "body": row["body"],
+        "revision_id": row["revision_id"],
         "created_at": row["created_at"],
     }
 

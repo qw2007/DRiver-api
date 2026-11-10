@@ -1,23 +1,24 @@
-"""PhoNote 的工具表：截图缓冲区 + 自由文件树 + 笔记 + 批注 + 版本 + 导出。
+"""PhoNote 的工具表：截图缓冲区 + 自由文件树 + 笔记 + 批注 + 版本 + 导出 + AI。
 
 每个工具的形状都一样（一个入参模型 + 一次存储调用），所以这里用「一张表 + 一个
-通用工具类」而不是十七个近乎相同的类：加一个工具只加一行。``manifest()`` 用实例
+通用工具类」而不是二十多个近乎相同的类：加一个工具只加一行。``manifest()`` 用实例
 方法覆盖基类的 ``classmethod``（注册表是按实例调用的，与远程插件同一套做法）。
 
-工具清单在 P1 补齐到 17 个：树的三件（建/改/移/删）、笔记的读改搜、图片列表重写、
-批注两条、版本两条、导出。
+P1 补齐到 17 个（树/笔记/图片/批注/版本/导出），P2 再加 5 个 AI 工具。
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import inspect
 from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from driver_platform.errors import InvalidArgumentsError
+from driver_platform.plugins.pho_note.ai import NoteAI, apply_edits, parse_reply
 from driver_platform.plugins.pho_note.store import Store
 from driver_platform.tools.base import Tool, ToolManifest
 
@@ -137,6 +138,34 @@ class NoteExportInput(BaseModel):
     note_id: str = Field(min_length=1, description="笔记节点 id")
 
 
+class NoteSummarizeInput(BaseModel):
+    note_id: str = Field(min_length=1, description="笔记节点 id")
+    instruction: str = Field(default="", description="额外要求；留空表示「整理成结构化要点」")
+
+
+class NoteChatInput(BaseModel):
+    note_id: str = Field(min_length=1, description="笔记节点 id")
+    message: str = Field(min_length=1, max_length=4000, description="想问或想让 AI 改什么")
+
+
+class NoteMessagesInput(BaseModel):
+    note_id: str = Field(min_length=1, description="笔记节点 id")
+    limit: int = Field(default=50, ge=1, le=200, description="最多返回多少条")
+
+
+class NoteApplyPatchInput(BaseModel):
+    note_id: str = Field(min_length=1, description="笔记节点 id")
+    find: str = Field(
+        default="", description="正文里逐字出现且只出现一次的原文；给空串表示追加到末尾"
+    )
+    replace: str = Field(default="", description="替换成的文字")
+
+
+class NoteIngestReplyInput(BaseModel):
+    note_id: str = Field(min_length=1, description="笔记节点 id")
+    reply: str = Field(min_length=1, description="粘贴回来的模型回复（JSON 补丁）")
+
+
 # --------------------------------------------------------------------- 通用工具
 
 
@@ -168,7 +197,10 @@ class _FnTool(Tool[BaseModel, Any]):
         )
 
     async def execute(self, arguments: Any) -> Any:
-        return self._handler(arguments)
+        result = self._handler(arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 def _add_capture(store: Store) -> Callable[[NoteAddCaptureInput], Any]:
@@ -190,7 +222,32 @@ def _add_capture(store: Store) -> Callable[[NoteAddCaptureInput], Any]:
     return run
 
 
-def build_tools(store: Store) -> list[Tool[Any, Any]]:
+def _note_with_images(
+    store: Store, ai: NoteAI, note_id: str
+) -> tuple[dict[str, Any], list[tuple[str, bytes]]]:
+    """取笔记 + 要发给模型的图片字节（张数由 ``DRIVER_NOTES_LLM_MAX_IMAGES`` 控制）。"""
+
+    note = store.get_note(note_id)
+    images: list[tuple[str, bytes]] = []
+    for image in (note.get("images") or [])[: ai.config.max_images]:
+        images.append(store.media_bytes(image["capture_id"]))
+    return note, images
+
+
+def _apply(reply: str, note: dict[str, Any]) -> dict[str, Any]:
+    parsed = parse_reply(reply)
+    body, applied, skipped = apply_edits(note["body_md"], parsed["edits"])
+    return {
+        "summary": parsed["summary"],
+        "body_md": body,
+        "edits": parsed["edits"],
+        "applied": applied,
+        "skipped": skipped,
+        "changed": body != note["body_md"],
+    }
+
+
+def build_tools(store: Store, ai: NoteAI) -> list[Tool[Any, Any]]:
     """按固定顺序返回工具表（顺序决定 Agent 看到的面板顺序）。"""
 
     def tool(
@@ -318,4 +375,109 @@ def build_tools(store: Store) -> list[Tool[Any, Any]]:
             NoteExportInput,
             lambda a: store.export_markdown(a.note_id),
         ),
+        # AI（P2）：manual 模式不调模型，只把上下文包交回去，由人贴给网页版
+        tool(
+            "note_summarize",
+            "让 AI 读笔记正文与截图，生成总结与增量修订建议（manual 模式返回上下文包）",
+            NoteSummarizeInput,
+            lambda a: run_summarize(store, ai, a.note_id, a.instruction),
+        ),
+        tool(
+            "note_chat",
+            "就这篇笔记与 AI 对话：带上最近十条历史，回复会记进讨论区",
+            NoteChatInput,
+            lambda a: run_chat(store, ai, a.note_id, a.message),
+        ),
+        tool(
+            "note_messages",
+            "读一篇笔记的讨论区消息（旧到新）",
+            NoteMessagesInput,
+            lambda a: store.list_messages(a.note_id, limit=a.limit),
+        ),
+        tool(
+            "note_apply_patch",
+            "把一处 find/replace 直接套用到笔记正文（find 必须逐字唯一；空串表示追加）",
+            NoteApplyPatchInput,
+            lambda a: run_patch(store, a.note_id, a.find, a.replace),
+        ),
+        tool(
+            "note_ingest_ai_reply",
+            "把从网页版模型粘回来的 JSON 回复解析并套用到正文",
+            NoteIngestReplyInput,
+            lambda a: _ingest(store, a),
+        ),
     ]
+
+
+# --------------------------------------------------------------------- AI 处理器
+
+_DEFAULT_INSTRUCTION = "把这篇笔记（连同截图里的板书）整理成结构化要点。"
+
+
+async def run_summarize(store: Store, ai: NoteAI, note_id: str, instruction: str) -> dict[str, Any]:
+    note, images = _note_with_images(store, ai, note_id)
+    prompt = instruction.strip() or _DEFAULT_INSTRUCTION
+    outcome = await ai.act(
+        note=note,
+        annotations=note.get("annotations") or [],
+        instruction=prompt,
+        images=images,
+    )
+    if outcome.get("mode") == "manual":
+        return outcome
+    store.add_message(note["id"], role="user", body=prompt)
+    store.add_message(note["id"], role="assistant", body=outcome["summary"])
+    return outcome
+
+
+async def run_chat(store: Store, ai: NoteAI, note_id: str, message: str) -> dict[str, Any]:
+    note, images = _note_with_images(store, ai, note_id)
+    # 先把提问落库：模型不可用时这句也算数，用户回头能看到自己问过什么。
+    store.add_message(note["id"], role="user", body=message)
+    history = [
+        {"role": item["role"], "content": item["body"]}
+        for item in store.list_messages(note["id"], limit=10)
+    ]
+    outcome = await ai.act(
+        note=note,
+        annotations=note.get("annotations") or [],
+        instruction=message,
+        images=images,
+        history=history,
+    )
+    if outcome.get("mode") == "manual":
+        return outcome
+    store.add_message(note["id"], role="assistant", body=outcome["summary"])
+    return outcome
+
+
+def run_patch(store: Store, note_id: str, find: str, replace: str) -> dict[str, Any]:
+    note = store.get_note(note_id)
+    body, applied, skipped = apply_edits(note["body_md"], [{"find": find, "replace": replace}])
+    if not applied:
+        # 没套上就别写库：免得白存一个「内容没变」的版本。
+        return {
+            "note_id": note["id"],
+            "body_md": note["body_md"],
+            "applied": applied,
+            "skipped": skipped,
+            "changed": False,
+        }
+    updated = store.update_note(note["id"], body_md=body, reason="ai-patch")
+    return {
+        "note_id": note["id"],
+        "body_md": updated["body_md"],
+        "applied": applied,
+        "skipped": skipped,
+        "changed": True,
+    }
+
+
+def _ingest(store: Store, arguments: NoteIngestReplyInput) -> dict[str, Any]:
+    note = store.get_note(arguments.note_id)
+    result = _apply(arguments.reply, note)
+    if result["changed"]:
+        updated = store.update_note(note["id"], body_md=result["body_md"], reason="ai-reply")
+        result["body_md"] = updated["body_md"]
+    store.add_message(note["id"], role="assistant", body=result["summary"])
+    return result

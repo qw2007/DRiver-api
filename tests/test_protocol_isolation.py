@@ -15,9 +15,12 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "driver_platform"
 #: 允许 import mcp SDK 的文件（相对 SRC 的 posix 路径）——注意是「允许」，不是「必须」。
 MCP_IMPORTERS = {"protocols/mcp.py", "protocols/mcp_server.py"}
 
-#: 允许出网的实现：远程插件宿主是平台里**唯一**一个「替调用方发起 HTTP 请求」的地方。
-#: 它进核心依赖正是为了这件事；别处再 import httpx，说明又有人绕过这一层直接出网了。
-HTTPX_IMPORTERS = {"plugins/remote.py"}
+#: 允许出网的两处，各自有明确理由：
+#: - ``plugins/remote.py``：远程插件宿主，替调用方访问别人注册进来的远端服务；
+#: - ``plugins/pho_note/ai.py``：笔记插件的模型客户端，替用户访问他配置的模型服务。
+#: 两者都是「按配置访问一个外部 HTTP 服务」，都带超时与错误映射。再加第三处要显式改这张表，
+#: 让「谁在出网」永远是可数的。
+HTTPX_IMPORTERS = {"plugins/remote.py", "plugins/pho_note/ai.py"}
 
 #: 与协议适配无关、因此绝不该被适配器 import 的第三方 SDK 根名。
 FORBIDDEN_IN_OPENAI_ADAPTER = {"mcp", "openai", "anthropic", "langchain"}
@@ -67,8 +70,8 @@ def test_core_does_not_depend_on_protocol_adapters() -> None:
         assert not any(module.startswith("driver_platform.protocols.") for module in modules), path
 
 
-def test_only_the_remote_plugin_host_speaks_http() -> None:
-    """出网只有一处：远程插件宿主。核心服务要调远端，必须经过它（含超时与错误映射）。"""
+def test_only_the_known_egress_points_speak_http() -> None:
+    """出网是可数的：远程插件宿主 + 笔记插件的模型客户端，别处不许 import httpx。"""
     importers = {
         path.relative_to(SRC).as_posix()
         for path in _source_files()
