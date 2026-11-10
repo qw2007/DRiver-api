@@ -21,6 +21,7 @@
 | 文档（任务书 + 变更日志） | `783b5c6` | 2026-10-01 | 4 files, +409 / −2 | `docs/task-brief.md` + `CHANGELOG.md` + README 入口 |
 | — 工具链与环境约束 | 见文末 | 2026-10-01 | 6 files, +268 / −10 | 本地门禁全绿；沙箱三坑固化解法 |
 | — PhoNote 插件 P0 | 见文末 | 2026-11-10 | 见文末 | 六个 `note_*` 工具；截图 → 缓冲区 → 组笔记 → 读回 |
+| — PhoNote 插件 P1 | 见文末 | 2026-11-10 | 见文末 | 十七个工具 + `/notes/api/*` REST 层；树增删改移、批注、版本回滚、导出 |
 
 ---
 
@@ -256,10 +257,31 @@
 
 ---
 
+## 非阶段交付：PhoNote 插件 P1（2026-11-10）
+
+**目标**：把 P0 的「六个工具」补齐到可以日常用——树的增删改移、批注、版本回滚、导出，以及给壳用的 REST 层（P0 的壳靠 `/v1/tools/execute` 传 base64，图片一多就慢）。
+
+**交付物**：`store.py` 追加 `annotations` / `revisions` 两表与十二个方法（`SCHEMA_VERSION=2`）；`tools.py` 从十七个类压成「一张表 + 一个通用工具类」（十七个工具）；新建 `plugins/pho_note/api.py`（`/notes/api/*` 十六条端点，`DRIVER_NOTES_UI=1` 才挂）；`errors.py` 新增 `node_name_conflict`(409)、`node_move_invalid`(422)；`tests/test_pho_note_p1.py`（11 例）。
+
+**关键决策与理由**：
+- **加表不加 ALTER**：两张新表都用 `CREATE TABLE IF NOT EXISTS` 写进同一个 schema 脚本，`PRAGMA user_version` 只当标记——已经存在的 v1 库打开后自动多出两表，省掉迁移框架（真需要改列时再上）；
+- **`note_set_images` 取代设计里的 attach/detach**：增、删、重排都是「整体重写」，一个工具做三件事，少一个「先删后加顺序乱了」的状态；
+- **改正文先存旧版**：`note_update` 在覆盖前把旧正文写进 `revisions`，回滚本身也留一个版本——「撤销撤销」是真实需求；
+- **改名撞车用 409 而不是 422**：请求本身合法，只是与现有数据冲突，两个错误码让调用方能区分「参数写错」和「名字被占」；
+- **REST 与工具各管各的授权**：工具按工具名作用域，REST 按 `notes_read`/`notes_write`——只读钥匙因此可以给第二台设备/投屏，而它调不动任何写工具；
+- **上传仍是 JSON base64**：P1 不引 `python-multipart`，单图 8 MB 上限对网课截图足够，少一个依赖与一条 multipart 解析路径；
+- **通用工具类**：`_FnTool` 用实例方法覆盖 `manifest()`（与远程插件同一套做法），十七个工具从十七个类变成一张表，加工具是加一行。
+
+**验收证据**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **71 files**；`mypy` → Success: no issues found in **39 source files**；`pytest` → exit 0，**311 passed**，覆盖率 **95%**（1856 语句 / 98 未覆盖，`pho_note/api.py` 91%、`store.py` 94%、`tools.py` 99%）；真实 uvicorn（8012，`DRIVER_NOTES_UI=1`）跑通：建目录 `nod_185ebec0a5e445e5` → 上传 `cap_96378584d17f406e image/png` → 组笔记 `nod_f6b939947cc24cf8 images=1` → `PATCH` 后 `revisions` 有一条旧正文 → 批注 `ann_cae5ac922db54d60` → 导出响应头 `filename*=UTF-8''%E7%AC%AC%201...` 且 Markdown 里是绝对图片路径 → `/captures/{id}/image` 返回原字节。
+
+**已知限制**：批注锚点里的「选中文字/图片区域」坐标由 P2 的 UI 补（REST 只存 JSON）；图片仍只能从磁盘按 sha256 读，无缩略图；导出是「复制 Markdown 到剪贴板 + 绝对路径」而不是打包下载；删除不级联删图（图留在缓冲区）。
+
+---
+
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 1 个非阶段交付（PhoNote 插件 P0，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **69 files** already formatted；`mypy` → Success: no issues found in **38 source files**；`pytest` → **300 passed**，覆盖率 **95%**（1561 语句 / 71 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 2 个非阶段交付（PhoNote 插件 P0/P1，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **71 files** already formatted；`mypy` → Success: no issues found in **39 source files**；`pytest` → **311 passed**，覆盖率 **95%**（1856 语句 / 98 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
 - **下一步**：九阶段目标已收口。要继续往下走，先处理 [`docs/handoff.md`](docs/handoff.md) 第 3.3 节的待拍板项（CI 是否加 `--cov-fail-under`、bandit/pip-audit 是否进 CI、是否需要真正的编排层、包版本与发布流程），以及阶段 8 已知限制里最接近生产的两条：镜像瘦身/非 root 运行、`/metrics` 收进内网。
 
@@ -275,4 +297,4 @@
 8. 部署的默认形态是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
 9. 多副本是**单机 Compose 的 `--scale`**、不是编排（不自动补副本、无滚动策略、跨宿主无从谈起），nginx 解析有 5 秒窗口，重试对非幂等请求也开着，多副本共享同一份只读数据卷，探针只衡量成功率，`/metrics` 经网关暴露且仍无鉴权，远程插件的 HTTP 客户端会继承宿主机代理设置，详见阶段 8 说明；
 10. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许；本机 DSH 会话里 **Python 子进程**连 `danger-full-access` 都解不开（写不了工作区外、打不开 Docker 命名管道），所以本机滚动验收用等价 PowerShell 序列替代 `deploy/rollout.py`（见阶段 8 说明的验收证据第 5 节）。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
-11. **PhoNote 插件（P0）**：只有六个工具，无 REST 层（壳走 `/v1/tools/execute` 带 base64，单图上限 8 MB），无改名/移动/删除、无批注与版本、AI 与同步未接；图片只能按 sha256 从磁盘读（`/captures/{id}/image` 属 P1），多屏只截第一屏；壳的 `npm install` 未在本机验证。
+11. **PhoNote 插件（P0/P1）**：单机单用户（SQLite + 本地文件，WebDAV 同步属 P3）；批注锚点里的选中文字/图片区域坐标要等 P2 的 UI 补，REST 只存 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 总结/讨论与同步未接；多屏只截第一屏；壳的 `npm install` 未在本机验证。

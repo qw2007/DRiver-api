@@ -1,7 +1,7 @@
 """配置外部化：可配项只从环境变量读，代码里不留第二份真相。
 
 十二个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
-PhoNote 的数据目录（``DRIVER_NOTES_DIR``）、
+PhoNote 的数据目录（``DRIVER_NOTES_DIR``）与它的 REST 层开关（``DRIVER_NOTES_UI``）、
 开哪些协议适配器（``DRIVER_PROTOCOLS``）、要不要凭证（``DRIVER_AUTH_MODE``）、
 钥匙清单与作用域（``DRIVER_API_KEYS``）、要不要暴露指标（``DRIVER_METRICS_ENABLED``）、
 日志级别与格式（``DRIVER_LOG_LEVEL`` / ``DRIVER_LOG_FORMAT``）、启动期装载哪些远程插件
@@ -45,6 +45,7 @@ from driver_platform.security.policy import (
 ENV_PLUGINS = "DRIVER_PLUGINS"
 ENV_SQLITE_PATH = "DRIVER_SQLITE_PATH"
 ENV_NOTES_DIR = "DRIVER_NOTES_DIR"
+ENV_NOTES_UI = "DRIVER_NOTES_UI"
 ENV_PROTOCOLS = "DRIVER_PROTOCOLS"
 ENV_METRICS_ENABLED = "DRIVER_METRICS_ENABLED"
 ENV_LOG_LEVEL = "DRIVER_LOG_LEVEL"
@@ -66,6 +67,7 @@ class Settings:
     plugins: tuple[str, ...] = ()
     sqlite_path: str | None = None
     notes_dir: str = ""
+    notes_ui: bool = False
     protocols: tuple[str, ...] = ()
     auth_mode: str = AUTH_MODE_OFF
     api_keys: tuple[ApiKey, ...] = ()
@@ -111,6 +113,7 @@ class Settings:
             plugins=_split(environ.get(ENV_PLUGINS, "")),
             sqlite_path=environ.get(ENV_SQLITE_PATH) or None,
             notes_dir=environ.get(ENV_NOTES_DIR, "").strip(),
+            notes_ui=_parse_bool(ENV_NOTES_UI, environ.get(ENV_NOTES_UI, "")),
             protocols=protocols,
             auth_mode=environ.get(ENV_AUTH_MODE, AUTH_MODE_OFF).strip() or AUTH_MODE_OFF,
             api_keys=parse_api_keys(environ.get(ENV_API_KEYS, "")),

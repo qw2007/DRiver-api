@@ -1,18 +1,22 @@
-"""PhoNote 的存储层：一棵自由文件树 + 一个截图缓冲区 + 笔记正文。
+"""PhoNote 的存储层：一棵自由文件树 + 一个截图缓冲区 + 笔记正文 + 批注 + 版本。
 
-只做 P0 需要的事——建库/迁移、树节点、图片去重入库、组笔记、读笔记。
-批注、版本、消息、同步都在后面的阶段加表，P0 不预埋空表（`note_get` 因此不返回
-``annotations`` / ``revisions`` 字段，而不是返回两个永远是 ``[]`` 的键）。
+P0 只做「截图进缓冲区 → 组笔记 → 读回来」；P1 补齐树的全量增删改移、批注与版本，
+并给壳一层 REST。消息（讨论区）与同步仍在后面的阶段加表，这里不预埋空表。
 
 三条硬约束：
 1. 树用**单表自引用**（``parent_id``）：层级深度不设限，改名/移动不需要改任何路径；
 2. 图片按 ``sha256`` 内容寻址：同一张图截两次只落一份盘；
 3. 所有 SQL 都是静态字符串 + 参数绑定，用户输入永远不进 SQL 文本。
+
+迁移方式：每个版本的新表都用 ``CREATE TABLE IF NOT EXISTS`` 写进同一个脚本，
+``PRAGMA user_version`` 只是标记——P0 的库（v1）打开后会多出批注与版本两张表，
+不需要另写一段 ALTER。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import threading
@@ -21,9 +25,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from driver_platform.errors import InvalidArgumentsError, NoteNotFoundError
+from driver_platform.errors import (
+    InvalidArgumentsError,
+    NodeMoveInvalidError,
+    NodeNameConflictError,
+    NoteNotFoundError,
+)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: 建库脚本。``user_version`` 是迁移版本号，P1 起每加一版就在这里追加一段。
 _SCHEMA = """
@@ -62,6 +71,28 @@ CREATE TABLE IF NOT EXISTS note_images (
     position INTEGER NOT NULL,
     PRIMARY KEY (note_id, capture_id)
 );
+
+CREATE TABLE IF NOT EXISTS annotations (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES nodes (id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('note', 'text', 'image')),
+    anchor TEXT NOT NULL DEFAULT '{}',
+    body_md TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT 'yellow',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_annotations_note ON annotations (note_id, created_at);
+
+CREATE TABLE IF NOT EXISTS revisions (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES nodes (id) ON DELETE CASCADE,
+    body_md TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_revisions_note ON revisions (note_id, created_at);
 """
 
 #: 认得出的图片格式：魔数 → (媒体类型, 后缀)。壳上传的是 WebP，但 P0 不强制转码。
@@ -136,9 +167,7 @@ class Store:
         name: str,
         body_md: str = "",
     ) -> dict[str, Any]:
-        clean = name.strip()
-        if not clean or len(clean) > NAME_LIMIT:
-            raise InvalidArgumentsError(f"名字长度必须是 1..{NAME_LIMIT} 个字符")
+        clean = _clean_name(name)
         if kind not in {"folder", "note"}:
             raise InvalidArgumentsError("kind 只能是 folder 或 note")
         if kind == "folder" and body_md.strip():
@@ -224,6 +253,19 @@ class Store:
             ).fetchone()
             return _capture_dict(row)
 
+    def get_capture(self, capture_id: str) -> dict[str, Any]:
+        """按 id 取一张图（含相对路径），给 REST 的图片端点用。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM captures WHERE id = ?", (capture_id,)
+            ).fetchone()
+        if row is None:
+            raise InvalidArgumentsError(
+                f"图片不存在：{capture_id}",
+                details=[{"type": "unknown_capture", "loc": ["capture_id"], "msg": capture_id}],
+            )
+        return _capture_dict(row)
+
     def list_captures(self, *, limit: int, unused_only: bool) -> list[dict[str, Any]]:
         query = "SELECT * FROM captures"
         if unused_only:
@@ -282,13 +324,310 @@ class Store:
                 " WHERE ni.note_id = ? ORDER BY ni.position",
                 (note_id,),
             ).fetchall()
+            annotations = self._connection.execute(
+                "SELECT * FROM annotations WHERE note_id = ? ORDER BY created_at",
+                (note_id,),
+            ).fetchall()
         note = self._node_dict_from_row(row)
         note["images"] = [
             {**_capture_dict(image), "position": image["position"]} for image in images
         ]
+        note["annotations"] = [self._annotation_dict(item) for item in annotations]
         return note
 
+    # ------------------------------------------------------------- 树：增删改移
+
+    def get_node(self, node_id: str) -> dict[str, Any]:
+        with self._lock, self._transaction(self._connection) as connection:
+            return self._node_dict(connection, self._node_row(connection, node_id)["id"])
+
+    def rename_node(self, node_id: str, name: str) -> dict[str, Any]:
+        clean = _clean_name(name)
+        with self._lock, self._transaction(self._connection) as connection:
+            row = self._node_row(connection, node_id)
+            try:
+                connection.execute(
+                    "UPDATE nodes SET name = ?, updated_at = ? WHERE id = ?",
+                    (clean, _now(), row["id"]),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise NodeNameConflictError(
+                    f"同层已经有叫「{clean}」的节点",
+                    details=[{"type": "duplicate_name", "loc": ["name"], "msg": clean}],
+                ) from exc
+            return self._node_dict(connection, node_id)
+
+    def move_node(
+        self,
+        node_id: str,
+        *,
+        parent_id: str | None,
+        position: int | None = None,
+    ) -> dict[str, Any]:
+        with self._lock, self._transaction(self._connection) as connection:
+            row = self._node_row(connection, node_id)
+            if parent_id is not None:
+                parent = connection.execute(
+                    "SELECT kind FROM nodes WHERE id = ?", (parent_id,)
+                ).fetchone()
+                if parent is None or parent["kind"] != "folder":
+                    raise NodeMoveInvalidError(f"目标父节点不存在或不是目录：{parent_id}")
+                # 环形检查：目标在「自己这棵子树」里（含自己）就会把树撕成两半。
+                if parent_id == node_id or self._is_descendant(connection, node_id, parent_id):
+                    raise NodeMoveInvalidError("不能把节点移动到它自己或它的子节点下")
+            target = (
+                position if position is not None else self._next_position(connection, parent_id)
+            )
+            try:
+                connection.execute(
+                    "UPDATE nodes SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?",
+                    (parent_id, target, _now(), row["id"]),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise NodeNameConflictError(
+                    f"目标目录下已经有叫「{row['name']}」的节点",
+                    details=[{"type": "duplicate_name", "loc": ["name"], "msg": row["name"]}],
+                ) from exc
+            return self._node_dict(connection, node_id)
+
+    def delete_node(self, node_id: str, *, recursive: bool) -> dict[str, Any]:
+        with self._lock, self._transaction(self._connection) as connection:
+            self._node_row(connection, node_id)
+            size = self._subtree_size(connection, node_id)
+            if size > 1 and not recursive:
+                raise InvalidArgumentsError(
+                    f"节点下还有 {size - 1} 个子孙；确认要一起删就传 recursive=true"
+                )
+            # 子孙由 ON DELETE CASCADE 带走；图片留在缓冲区（可能被别的笔记用着）。
+            connection.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+            return {"deleted": size, "node_id": node_id}
+
+    # ------------------------------------------------------------- 笔记
+
+    def update_note(
+        self,
+        note_id: str,
+        *,
+        name: str | None = None,
+        body_md: str | None = None,
+        reason: str = "edit",
+    ) -> dict[str, Any]:
+        with self._lock, self._transaction(self._connection) as connection:
+            row = self._node_row(connection, note_id)
+            if row["kind"] != "note":
+                raise InvalidArgumentsError("这是目录，没有正文可改")
+            new_name = row["name"] if name is None else _clean_name(name)
+            new_body = row["body_md"] if body_md is None else body_md
+            if body_md is not None and new_body != row["body_md"]:
+                # 旧正文先存档再覆盖：撤回一步的成本，换「改坏了还能退回来」。
+                self._add_revision(connection, note_id, row["body_md"], reason)
+            try:
+                connection.execute(
+                    "UPDATE nodes SET name = ?, body_md = ?, updated_at = ? WHERE id = ?",
+                    (new_name, new_body, _now(), row["id"]),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise NodeNameConflictError(
+                    f"同层已经有叫「{new_name}」的节点",
+                    details=[{"type": "duplicate_name", "loc": ["name"], "msg": new_name}],
+                ) from exc
+            return self._node_dict(connection, note_id)
+
+    def list_notes(self, *, query: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        """按名字或正文搜笔记。``query`` 里的 ``%`` / ``_`` 当普通字符（ESCAPE '\\'）。"""
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT id, parent_id, name, updated_at, substr(body_md, 1, 200) AS snippet"
+                " FROM nodes WHERE kind = 'note'"
+                " AND (name LIKE ? ESCAPE '\\' OR body_md LIKE ? ESCAPE '\\')"
+                " ORDER BY updated_at DESC LIMIT ?",
+                (pattern, pattern, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_images(self, note_id: str, capture_ids: list[str]) -> dict[str, Any]:
+        """用给定顺序整体重写一篇笔记的图片列表（增、删、重排都走这一条路径）。"""
+        with self._lock, self._transaction(self._connection) as connection:
+            row = self._node_row(connection, note_id)
+            if row["kind"] != "note":
+                raise InvalidArgumentsError("目录不能挂图片")
+            for capture_id in capture_ids:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM captures WHERE id = ?", (capture_id,)
+                    ).fetchone()
+                    is None
+                ):
+                    raise InvalidArgumentsError(
+                        f"图片不存在：{capture_id}",
+                        details=[
+                            {"type": "unknown_capture", "loc": ["capture_ids"], "msg": capture_id}
+                        ],
+                    )
+            connection.execute("DELETE FROM note_images WHERE note_id = ?", (note_id,))
+            for position, capture_id in enumerate(capture_ids):
+                connection.execute(
+                    "INSERT INTO note_images (note_id, capture_id, position) VALUES (?, ?, ?)",
+                    (note_id, capture_id, position),
+                )
+        return self.get_note(note_id)
+
+    # ------------------------------------------------------------- 批注
+
+    def add_annotation(
+        self,
+        note_id: str,
+        *,
+        kind: str,
+        anchor: dict[str, Any],
+        body_md: str,
+        color: str = "yellow",
+    ) -> dict[str, Any]:
+        if kind not in {"note", "text", "image"}:
+            raise InvalidArgumentsError("批注类型只能是 note / text / image")
+        text = body_md.strip()
+        if not text:
+            raise InvalidArgumentsError("批注内容不能为空")
+        with self._lock, self._transaction(self._connection) as connection:
+            row = self._node_row(connection, note_id)
+            if row["kind"] != "note":
+                raise InvalidArgumentsError("只能给笔记加批注")
+            annotation_id = _new_id("ann")
+            connection.execute(
+                "INSERT INTO annotations (id, note_id, kind, anchor, body_md, color, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    annotation_id,
+                    note_id,
+                    kind,
+                    json.dumps(anchor, ensure_ascii=False),
+                    text,
+                    color,
+                    _now(),
+                ),
+            )
+            return self._annotation_dict(
+                connection.execute(
+                    "SELECT * FROM annotations WHERE id = ?", (annotation_id,)
+                ).fetchone()
+            )
+
+    def delete_annotation(self, annotation_id: str) -> dict[str, Any]:
+        with self._lock, self._transaction(self._connection) as connection:
+            row = connection.execute(
+                "SELECT id FROM annotations WHERE id = ?", (annotation_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidArgumentsError(f"批注不存在：{annotation_id}")
+            connection.execute("DELETE FROM annotations WHERE id = ?", (annotation_id,))
+            return {"deleted": 1, "annotation_id": annotation_id}
+
+    # ------------------------------------------------------------- 版本
+
+    def list_revisions(self, note_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM revisions WHERE note_id = ? ORDER BY created_at DESC LIMIT ?",
+                (note_id, limit),
+            ).fetchall()
+        return [_revision_dict(row) for row in rows]
+
+    def rollback(self, note_id: str, revision_id: str) -> dict[str, Any]:
+        with self._lock, self._transaction(self._connection) as connection:
+            row = self._node_row(connection, note_id)
+            if row["kind"] != "note":
+                raise InvalidArgumentsError("只能回滚笔记")
+            target = connection.execute(
+                "SELECT * FROM revisions WHERE id = ? AND note_id = ?", (revision_id, note_id)
+            ).fetchone()
+            if target is None:
+                raise InvalidArgumentsError(f"这篇笔记没有这个版本：{revision_id}")
+            # 回滚本身也是一次修改：先把当前正文存档，撤回的动作可再被撤回。
+            self._add_revision(connection, note_id, row["body_md"], f"rollback:{revision_id}")
+            connection.execute(
+                "UPDATE nodes SET body_md = ?, updated_at = ? WHERE id = ?",
+                (target["body_md"], _now(), note_id),
+            )
+        return self.get_note(note_id)
+
+    # ------------------------------------------------------------- 导出
+
+    def export_markdown(self, note_id: str) -> dict[str, Any]:
+        """把笔记渲成一份自带图片绝对路径的 Markdown（粘到哪里图都在）。"""
+        note = self.get_note(note_id)
+        lines = [f"# {note['name']}", ""]
+        if note["body_md"].strip():
+            lines += [note["body_md"].rstrip(), ""]
+        images = []
+        for image in note["images"]:
+            path = (self.root / image["path"]).resolve()
+            caption = image.get("app_title") or image["capture_id"]
+            lines.append(f"![{caption}](<{path.as_posix()}>)")
+            images.append({"capture_id": image["capture_id"], "path": path.as_posix()})
+        markdown = "\n".join(lines).rstrip() + "\n"
+        return {
+            "note_id": note_id,
+            "name": note["name"],
+            "markdown": markdown,
+            "images": images,
+        }
+
     # ------------------------------------------------------------------ 内部
+
+    def _node_row(self, connection: sqlite3.Connection, node_id: str) -> sqlite3.Row:
+        row = connection.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        if row is None:
+            raise NoteNotFoundError(
+                f"节点不存在：{node_id}",
+                details=[{"type": "unknown_node", "loc": ["node_id"], "msg": node_id}],
+            )
+        return row
+
+    def _is_descendant(
+        self, connection: sqlite3.Connection, ancestor_id: str, candidate_id: str
+    ) -> bool:
+        row = connection.execute(
+            "WITH RECURSIVE sub (id) AS ("
+            "  SELECT id FROM nodes WHERE id = ?"
+            "  UNION ALL"
+            "  SELECT n.id FROM nodes n JOIN sub ON n.parent_id = sub.id"
+            ") SELECT 1 FROM sub WHERE id = ? LIMIT 1",
+            (ancestor_id, candidate_id),
+        ).fetchone()
+        return row is not None
+
+    def _subtree_size(self, connection: sqlite3.Connection, node_id: str) -> int:
+        row = connection.execute(
+            "WITH RECURSIVE sub (id) AS ("
+            "  SELECT id FROM nodes WHERE id = ?"
+            "  UNION ALL"
+            "  SELECT n.id FROM nodes n JOIN sub ON n.parent_id = sub.id"
+            ") SELECT COUNT(*) AS total FROM sub",
+            (node_id,),
+        ).fetchone()
+        return int(row["total"])
+
+    def _add_revision(
+        self, connection: sqlite3.Connection, note_id: str, body_md: str, reason: str
+    ) -> None:
+        connection.execute(
+            "INSERT INTO revisions (id, note_id, body_md, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+            (_new_id("rev"), note_id, body_md, reason, _now()),
+        )
+
+    @staticmethod
+    def _annotation_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "annotation_id": row["id"],
+            "note_id": row["note_id"],
+            "kind": row["kind"],
+            "anchor": json.loads(row["anchor"]),
+            "body_md": row["body_md"],
+            "color": row["color"],
+            "created_at": row["created_at"],
+        }
 
     def _transaction(self, connection: sqlite3.Connection) -> _Transaction:
         return _Transaction(connection)
@@ -374,6 +713,24 @@ def _capture_dict(row: sqlite3.Row) -> dict[str, Any]:
         "bytes": row["bytes"],
         "source": row["source"],
         "app_title": row["app_title"],
+        "created_at": row["created_at"],
+        "path": row["path"],
+    }
+
+
+def _clean_name(name: str) -> str:
+    clean = name.strip()
+    if not clean or len(clean) > NAME_LIMIT:
+        raise InvalidArgumentsError(f"名字长度必须是 1..{NAME_LIMIT} 个字符")
+    return clean
+
+
+def _revision_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "revision_id": row["id"],
+        "note_id": row["note_id"],
+        "body_md": row["body_md"],
+        "reason": row["reason"],
         "created_at": row["created_at"],
     }
 

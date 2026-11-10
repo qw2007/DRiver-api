@@ -37,6 +37,11 @@ class PhoNotePlugin(Plugin):
         self._store = store
         self._tools = build_tools(store)
 
+    @property
+    def store(self) -> Store | None:
+        """REST 层用：插件没装载/已收尾时是 ``None``（调用方据此报 404）。"""
+        return self._store
+
     def tools(self) -> list[Tool[Any, Any]]:
         return list(self._tools)
 

@@ -174,6 +174,20 @@ class NoteNotFoundError(PlatformError):
     status_code = 404
 
 
+class NodeNameConflictError(PlatformError):
+    """同层已经有同名节点。409 而不是 422：请求本身合法，只是和现有数据撞了，改个名字就能过。"""
+
+    code = "node_name_conflict"
+    status_code = 409
+
+
+class NodeMoveInvalidError(PlatformError):
+    """移动目标非法：父节点不是目录，或目标在自己这棵子树里（会撕成环）。"""
+
+    code = "node_move_invalid"
+    status_code = 422
+
+
 class RemotePluginDisabledError(PlatformError):
     """远程插件管理接口没打开（``DRIVER_REMOTE_PLUGIN_ENABLED`` 默认关）。
 
