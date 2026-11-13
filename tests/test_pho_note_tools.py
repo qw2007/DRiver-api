@@ -17,8 +17,9 @@ from fastapi.testclient import TestClient
 
 from driver_platform.bootstrap import create_registry_and_host
 from driver_platform.config import Settings
-from driver_platform.errors import InvalidArgumentsError, NoteNotFoundError
+from driver_platform.errors import InvalidArgumentsError, NoteNotFoundError, PermissionDeniedError
 from driver_platform.main import create_app
+from driver_platform.security.keys import ANONYMOUS, Principal, parse_api_keys
 from driver_platform.tools.executor import execute_tool
 
 PNG_B64 = base64.b64encode(
@@ -49,8 +50,11 @@ def registry(settings: Settings) -> Iterator[Any]:
     host.close()
 
 
-def _run(registry: Any, name: str, arguments: dict[str, Any]) -> Any:
-    return asyncio.run(execute_tool(registry, name, arguments)).result
+def _run(
+    registry: Any, name: str, arguments: dict[str, Any], *, principal: Principal | None = None
+) -> Any:
+    who = principal if principal is not None else ANONYMOUS
+    return asyncio.run(execute_tool(registry, name, arguments, principal=who)).result
 
 
 def test_plugin_exposes_the_six_p0_tools(registry: Any) -> None:
@@ -141,3 +145,41 @@ def test_http_execute_round_trip(settings: Settings) -> None:
         )
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "note_not_found"
+
+
+def test_node_create_can_apply_a_template(registry: Any) -> None:
+    note = _run(
+        registry, "note_node_create", {"kind": "note", "name": "第 2 讲", "template": "lecture"}
+    )
+    # 骨架是「新建时替你写好」，四栏都在。
+    assert "## 定义" in note["body_md"]
+    assert "## 易错点" in note["body_md"]
+
+    # 显式给了正文就以正文为准，模板不覆盖用户写的东西。
+    own = _run(
+        registry,
+        "note_node_create",
+        {"kind": "note", "name": "第 3 讲", "body_md": "自己写的", "template": "lecture"},
+    )
+    assert own["body_md"] == "自己写的"
+
+    # 目录没有正文，模板套不上。
+    with pytest.raises(InvalidArgumentsError):
+        _run(
+            registry,
+            "note_node_create",
+            {"kind": "folder", "name": "第 4 讲", "template": "lecture"},
+        )
+
+
+def test_agent_key_can_read_but_not_write(registry: Any) -> None:
+    """设计 §14 第 4 条：Agent 拿一把只读窄钥匙，与只读设备钥匙（REST 的 notes_read）分开。"""
+    key = parse_api_keys("pho-agent:note_tree|note_get|note_list_captures")[0]
+    agent = Principal(fingerprint=key.fingerprint, scopes=key.scopes)
+
+    # 读：三把工具都在作用域里。
+    assert _run(registry, "note_tree", {}, principal=agent) == []
+
+    # 写：不在作用域里，统一入口在动存储之前就拒。
+    with pytest.raises(PermissionDeniedError):
+        _run(registry, "note_node_create", {"kind": "note", "name": "Agent 写的"}, principal=agent)

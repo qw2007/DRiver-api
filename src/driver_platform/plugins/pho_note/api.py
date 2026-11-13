@@ -104,6 +104,7 @@ class CreateNodeBody(BaseModel):
     kind: Literal["folder", "note"]
     name: str = Field(min_length=1, max_length=200)
     body_md: str = ""
+    template: Literal["lecture"] | None = None
 
 
 class RenameNodeBody(BaseModel):

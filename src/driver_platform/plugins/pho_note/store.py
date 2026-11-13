@@ -118,6 +118,14 @@ _MAX_NAME_ATTEMPTS = 100
 
 NAME_LIMIT = 200
 
+#: 新建笔记时可选套用的骨架。只有一份内置模板：网课笔记最常见的就是「课上抄定义、
+#: 记定理、标易错」，先给这三栏比给十份花模板更有用；用户不选模板时正文保持空。
+TEMPLATES: dict[str, str] = {
+    "lecture": ("## 定义\n\n\n## 定理 / 结论\n\n\n## 易错点\n\n\n## 例题\n")
+}
+
+TEMPLATE_NAMES = tuple(TEMPLATES)
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -183,12 +191,30 @@ class Store:
         kind: str,
         name: str,
         body_md: str = "",
+        template: str | None = None,
     ) -> dict[str, Any]:
         clean = _clean_name(name)
         if kind not in {"folder", "note"}:
             raise InvalidArgumentsError("kind 只能是 folder 或 note")
         if kind == "folder" and body_md.strip():
             raise InvalidArgumentsError("文件树里的目录不能有正文")
+        if template is not None:
+            if kind != "note":
+                raise InvalidArgumentsError("模板只能套在笔记上，目录没有正文")
+            if template not in TEMPLATES:
+                raise InvalidArgumentsError(
+                    f"未知模板：{template}",
+                    details=[
+                        {
+                            "type": "unknown_template",
+                            "loc": ["template"],
+                            "msg": ", ".join(TEMPLATE_NAMES),
+                        }
+                    ],
+                )
+            # 显式给了正文就以正文为准：模板只是「新建时替你写好骨架」，不是覆盖。
+            if not body_md.strip():
+                body_md = TEMPLATES[template]
         with self._lock, self._transaction(self._connection) as connection:
             if parent_id is not None and self._folder_is_missing(connection, parent_id):
                 raise InvalidArgumentsError(

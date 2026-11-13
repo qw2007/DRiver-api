@@ -16,7 +16,11 @@ jobs:
       - run: ruff check .
       - run: ruff format --check src tests deploy examples
       - run: mypy
-      - run: pytest
+      # 覆盖率门禁：本地长期 95%，卡 90% 是「别一路掉下去」的底线，不是精确阈值。
+      - run: pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-under=90
+      # 安全扫描：这两条以前只在开发机上手动跑过，接进 CI 才有回归价值。
+      - run: bandit -r src -q
+      - run: python -m pip_audit --progress-spinner off
 
   # 阶段 7：部署交付的 CI 部分。先静态校验部署描述，再把镜像真的建起来跑一次冒烟——
   # 「compose 能起」不能只在开发机上验证过一次就算数。

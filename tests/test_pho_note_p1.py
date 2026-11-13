@@ -257,3 +257,21 @@ def test_rest_read_only_key_cannot_write(tmp_path: Path) -> None:
 def test_rest_is_absent_when_the_ui_flag_is_off(tmp_path: Path) -> None:
     with _client(tmp_path, ui=False) as client:
         assert client.get("/notes/api/tree").status_code == 404
+
+
+def test_rest_node_create_applies_a_template(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        created = client.post(
+            "/notes/api/nodes",
+            json={"kind": "note", "name": "第 5 讲", "template": "lecture"},
+        )
+        assert created.status_code == 201, created.text
+        assert "## 定义" in created.json()["body_md"]
+
+        # 未知模板是参数问题，不是 500：走平台统一的 422 信封。
+        bad = client.post(
+            "/notes/api/nodes",
+            json={"kind": "note", "name": "第 6 讲", "template": "exam"},
+        )
+        assert bad.status_code == 422
+        assert bad.json()["error"]["code"] == "invalid_request"

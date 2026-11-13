@@ -120,8 +120,8 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 
 ### 3.2 已知未做 / 明确留白（都不是 bug，是范围选择）
 
-1. **CI 覆盖率门禁未加**：本地跑 `--cov`（95%），但 CI 没有 `--cov-fail-under`。**这条当时是留给用户拍板的开放项**，至今未定。
-2. **`bandit` / `pip-audit` 未进 CI**：本机实测过（`bandit -r src -q` 干净、`pip-audit` 无已知漏洞），但没写进工作流。
+1. ~~CI 覆盖率门禁未加~~ **已补**：CI 现在跑 `pytest --cov=driver_platform --cov-fail-under=90`（本地 94%，门禁卡 90% 是防一路下滑的底线）。
+2. ~~`bandit` / `pip-audit` 未进 CI~~ **已补**：CI 增加了 `bandit -r src -q` 与 `python -m pip_audit --progress-spinner off` 两步。
 3. **CI 只跑 Python 3.14**：`requires-python` 放宽到 3.11+，3.11 / 3.12 从未实测（要加矩阵很容易，就是时间成本）。
 4. **PostgreSQL 插件未落地**：`task-brief.md` 原计划「PostgreSQL 复用同一插件契约」，至今仍只有 SQLite 一个（本机 Docker 已可用，可用 Testcontainers 补）。
 5. **`mypy` 只检查 `src`**：`tests/`、`deploy/`、`examples/` 不在类型检查范围内。
@@ -130,12 +130,16 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 无鉴权、指标是进程内的（重启归零）、无 traceparent（`request_id` 不跨进程）。
 9. **阶段 7 / 8 部署留白**：默认仍是单副本；容器 root、无资源限额、无只读根文件系统；第三方镜像钉 amd64 摘要；compose 里的演示钥匙是明文；多副本是单机 `--scale` 而非编排（不自动补副本、无跨宿主）。
 
-### 3.3 待你拍板的事（历史遗留）
+### 3.3 当年的四个开放项（已全部拍板）
 
-- 是否给 CI 加 `--cov-fail-under`（比如 90%），把覆盖率变成硬门禁？
-- 是否把 `bandit` / `pip-audit` 也接进 CI？
-- 是否需要真正的编排层：阶段 8 已用**单机 compose 多实例**验证了滚动不中断；再往上才是 K8s（要引 kind/helm 一类工具）。
-- 技术栈当年没有被明确拍板（规范首选 Python + FastAPI，实际就按它落地了）。现在换栈的代价已经很大，**默认继续 Python + FastAPI**；若要换，这是最后一个低成本窗口。
+| 问题 | 结论 |
+|---|---|
+| CI 加 `--cov-fail-under`？ | **加**，阈值 90%（`.github/workflows/ci.yml` 的 test 步骤） |
+| `bandit` / `pip-audit` 进 CI？ | **进**，与覆盖率门禁同一 job |
+| 是否上真正的编排层（K8s）？ | **不上**。阶段 8 用单机 compose `--scale` + nginx 网关验证了滚动不中断；K8s 要引 kind/helm，收益不在这一阶段 |
+| 技术栈换不换？ | **不换**，继续 Python + FastAPI（九个阶段与 PhoNote 全建在上面） |
+
+产出这一组结论的对话在 2026-11-13（用户逐条确认）。若将来要推翻其中任何一条，先改 `docs/stages/stage-7.md` / `stage-8.md` 的对应决策记录，再动代码。
 
 ---
 

@@ -42,6 +42,9 @@ class NoteNodeCreateInput(BaseModel):
     kind: Literal["folder", "note"] = Field(description="folder=目录，note=笔记")
     name: str = Field(min_length=1, max_length=200, description="节点名，同层重名会自动加 (2)")
     body_md: str = Field(default="", description="笔记正文（Markdown）；目录必须留空")
+    template: Literal["lecture"] | None = Field(
+        default=None, description="套用内置骨架（lecture=定义/定理/易错点/例题）；正文非空时忽略"
+    )
 
 
 class NoteNodeRenameInput(BaseModel):
@@ -278,10 +281,14 @@ def build_tools(store: Store, ai: NoteAI, sync: SyncConfig | None = None) -> lis
         ),
         tool(
             "note_node_create",
-            "在文件树里新建一个目录或一篇空笔记（同层重名自动加 (2)）",
+            "在文件树里新建一个目录或一篇笔记（同层重名自动加 (2)；template 可套骨架）",
             NoteNodeCreateInput,
             lambda a: store.create_node(
-                parent_id=a.parent_id, kind=a.kind, name=a.name, body_md=a.body_md
+                parent_id=a.parent_id,
+                kind=a.kind,
+                name=a.name,
+                body_md=a.body_md,
+                template=a.template,
             ),
         ),
         tool(

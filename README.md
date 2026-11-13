@@ -153,6 +153,15 @@ curl http://127.0.0.1:8000/notes/api/tree  # 给壳用的 REST 层（DRIVER_NOTE
 二十六个工具：树（`note_tree`/`note_node_create`/`note_node_rename`/`note_node_move`/`note_node_delete`）、截图缓冲（`note_add_capture`/`note_list_captures`）、笔记（`note_compose`/`note_get`/`note_list`/`note_update`/`note_set_images`）、批注（`note_annotate`/`note_annotate_delete`）、版本（`note_revisions`/`note_rollback`）、导出（`note_export`）、AI（`note_summarize`/`note_chat`/`note_messages`/`note_apply_patch`/`note_ingest_ai_reply`）、备份与同步（`note_backup`/`note_sync_push`/`note_sync_pull`/`note_sync_status`）。
 
 数据落在 `DRIVER_NOTES_DIR`（默认 `~/PhoNote`）：`phonote.db`（自由文件树 + 图片元数据 + 批注 + 版本 + 消息）+ `media/ab/cd/<sha256>.<ext>`（内容寻址，同一张图只存一份）。
+新建笔记可套内置骨架 `template=lecture`（`## 定义 / ## 定理 · 结论 / ## 易错点 / ## 例题`）：`note_node_create` 与 `POST /notes/api/nodes` 都接受这个字段，显式给 `body_md` 时以正文为准；壳的设置里勾「新建笔记套用骨架」即默认带上。
+
+三把钥匙的分工（工具作用域与 REST 作用域是两套，别混）：
+
+| 钥匙 | 形式 | 能做什么 |
+|---|---|---|
+| 主设备 | `pho-rw:note_*…` + `notes_read\|notes_write` | 壳的全部读写 |
+| 只读设备 | `pho-ro:notes_read`（REST）+ `note_tree\|note_get\|note_list_captures`（工具） | 看、导出、投屏 |
+| **给 Agent** | `pho-agent:note_tree\|note_get\|note_list_captures` | 只读窄钥匙：能看树与笔记，写操作在统一入口就被 403 拦下 |
 
 REST 层（`/notes/api/*`，挂载由 `DRIVER_NOTES_UI=1` 控制）给壳用：读操作要 `notes_read`、写操作要 `notes_write` 作用域；上传仍是 JSON base64（不引 `python-multipart`），单图上限 8 MB。AI 相关端点：`GET /notes/{id}/messages`、`POST /notes/{id}/summarize`、`POST /notes/{id}/chat`、`POST /notes/{id}/apply`；备份与同步：`POST /backup`、`GET /sync/status`、`POST /sync/push`、`POST /sync/pull`。
 
