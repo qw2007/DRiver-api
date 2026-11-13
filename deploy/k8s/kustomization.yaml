@@ -1,0 +1,21 @@
+#: 一次 apply 起全套：
+#:   kubectl apply -k deploy/k8s
+#:
+#: secret.example.yaml 里是演示钥匙的占位，真交付时用 kubectl create secret 覆盖（见该文件注释）。
+#: image 名与 driver-platform 的包版本一起升级：kustomize 的 images 段是唯一改镜像的地方。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: driver-platform
+
+resources:
+  - namespace.yaml
+  - secret.example.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - pdb.yaml
+
+images:
+  - name: ghcr.io/qw2007/driver-platform
+    newTag: 0.1.0

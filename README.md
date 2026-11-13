@@ -273,6 +273,25 @@ python deploy/traffic_probe.py --seconds 30 --workers 4 --expect 200
   策略（1.x 能加什么、什么必须升主版本）写在[阶段 8 说明](docs/stages/stage-8.md)的「契约兼容策略」。
 - 只想本地单副本时原来的 `docker compose up -d --build` 一字不用改；两个 overlay 文件是叠加关系。
 
+### K8s 编排（阶段 9 收口）
+
+Compose 是「一台机器一条命令」，K8s 是「交给编排层」——副本数、自愈、滚动发布、资源上限都由集群负责：
+
+```bash
+kubectl apply -k deploy/k8s            # Namespace + Secret + Deployment + Service + HPA + PDB
+kubectl -n driver-platform rollout status deploy/driver-platform
+kubectl -n driver-platform get pods,svc,hpa,pdb
+```
+
+- 清单在 `deploy/k8s/`：`deployment.yaml`（3 副本、`maxUnavailable: 0`、只读根文件系统、非 root、drop ALL、
+  `/health` 探针、128Mi/512m 资源上限）、`service.yaml`（ClusterIP 80 → 8000）、`hpa.yaml`（3→8 副本，CPU 70%）、
+  `pdb.yaml`（驱逐时至少留 2 个）、`secret.example.yaml`（演示钥匙占位，真部署用 `kubectl create secret` 覆盖）。
+- **数据卷是 emptyDir**：SQLite 不能多副本共享写，所以每个副本一份演示库（入口脚本启动时种）。
+  真要多副本共享数据，应开 PostgreSQL 插件（`DRIVER_PLUGINS=postgres`），而不是把 `/data` 挂成 RWO 卷。
+- **诚实标注**：本机没有可用集群（Docker Desktop 内置 Kubernetes 未能启动、`kind` 的二进制下载被网络阻断），
+  所以这批清单只做到「结构静态校验」（`tests/test_k8s_manifests.py`，7 个用例），**没有在真集群上 apply 过**。
+  校验命令 `kubectl apply --dry-run=client` 也需要 API server 做 discovery，离线不可用——这点写进了已知限制。
+
 ## 版本、质量门禁与发布
 
 当前版本 **0.1.0**（`src/driver_platform/__init__.py` 与 `pyproject.toml` 同一处真话，`docker-compose.yml` 的镜像标签跟着走；有个测试专门守这三点一致）。
@@ -288,7 +307,8 @@ pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-u
 
 CI 还跑 `bandit -r src -q` 与 `pip-audit`，外加两个非单元测试任务：`deploy`（compose 起全平台冒烟）与多副本配置静态校验（overlay 合并、`nginx -t`、验收脚本语法）。
 
-发布口径：`v0.1.0` 打 git tag 并建 GitHub Release；**不推镜像仓库**（镜像由 `docker compose build` 在本机/CI 现构，第三方镜像钉摘要）。版本号语义：接口契约（工具名、入参、错误码、响应形状）不兼容地变才升主版本——见[阶段 8 的契约兼容策略](docs/stages/stage-8.md)。
+发布口径：`v0.1.0` 打 git tag 并建 GitHub Release；镜像由 CI 的 `publish` 任务推到 GHCR（`ghcr.io/qw2007/driver-platform:<版本>` 与 `:sha-<7位>`，仅 master，`packages: write`）。
+本机 token 没有 `write:packages` 权限，实测 `docker push` 报 `permission_denied: The token provided does not match expected scopes`，所以推送只走 CI。版本号语义：接口契约（工具名、入参、错误码、响应形状）不兼容地变才升主版本——见[阶段 8 的契约兼容策略](docs/stages/stage-8.md)。
 
 ## 目录结构
 
@@ -311,9 +331,11 @@ deploy/                  容器入口脚本、演示库种子（原子安装）�
                          nginx 网关配置、多副本滚动脚本（rollout）与流量探针（traffic_probe）
 tests/                  注册表/接口契约/插件宿主/配置/search_database/协议适配/安全权限/可观测性/远程插件/部署描述/
                         进程生命周期/契约兼容/PhoNote 存储、工具、AI 与 REST 测试
-.github/workflows/ci.yml  CI：ruff check + ruff format --check + mypy + pytest，外加部署冒烟（compose 校验/构建/健康检查）
+.github/workflows/ci.yml  CI：3.11/3.12/3.14 矩阵（ruff + format + mypy + pytest --cov-fail-under=90 + bandit + pip-audit 在主版本）、
+                        部署冒烟（compose 校验/构建/健康检查）、GHCR 发布（仅 master，packages: write）
                         与多副本配置静态校验（overlay 合并、nginx -t、验收脚本语法）
 docker-compose.yml       阶段 7：一条命令起全平台（driver-platform + Prometheus + Grafana，第三方镜像钉摘要）
+deploy/k8s/              K8s 清单：Deployment / Service / HPA / PDB / Secret 占位 + kustomization（`kubectl apply -k`）
 docker-compose.scale.yml 阶段 8 overlay：摘掉平台端口、加 nginx 网关（`--scale` 配合使用，不改动基础文件）
 Dockerfile               运行镜像（分层安装 + HEALTHCHECK + 容器入口脚本）
 .dockerignore            构建上下文收窄：.venv / .git 不出现在发往守护进程的上下文里
@@ -343,14 +365,14 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 
 ## 已知限制
 
-- CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测（加矩阵 = 三倍 CI 时间，且本机只有 3.14 可对照）。
+- CI 跑 3.11 / 3.12 / 3.14 三档矩阵，但本机只有 3.14——3.11/3.12 的结论完全来自 CI，本地无法对照复现。
 - 工具执行无超时与并发限制，细节见阶段 1 说明的「已知限制」。
 - SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，细节见阶段 2 说明的「已知限制」。
 - MCP 侧只做 stdio 与 tools（无 HTTP/SSE、无 resources/prompts、一次一个客户端），协议版本跟随 SDK，`output_model` 即协议输出契约，细节见阶段 3 说明的「已知限制」。
 - 鉴权默认关且只到「工具名」这一层：不配 `DRIVER_AUTH_MODE=required` 就是开放的，密钥明文放在环境变量里，没有速率限制、配额、审计与吊销，细节见阶段 4 说明的「已知限制」。
-- 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零，多副本各算各的）；`X-Request-ID` 只在**本进程内**贯穿（没有 traceparent），日志不记请求体，直方图用默认桶（5 ms–10 s），细节见阶段 5 说明的「已知限制」。
+- 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零，多副本各算各的）；`X-Request-ID` 只在**本进程内**贯穿，跨进程靠 W3C `traceparent`（只做 trace 传播，不做 span 树），日志不记请求体，直方图用默认桶（5 ms–10 s），细节见阶段 5 说明的「已知限制」。
 - 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，远端地址是单点，每次调用新建 HTTP 客户端（不复用连接池），细节见阶段 6 说明的「已知限制」。
-- 默认那份 `docker-compose.yml` 是**单副本**：容器已改成非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU 限额，但 Prometheus / Grafana 钉的摘要是 amd64 平台摘要、基础镜像用标签（安全补丁自动进来、旧版也自动进来），`docker compose down -v` 会删数据卷，细节见阶段 7 说明的「已知限制」。
+- 默认那份 `docker-compose.yml` 是**单副本**：容器已改成非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU 限额，但 镜像已改成多阶段 + `python:3.14-alpine`（245 MB → 118 MB，代价是 musl 而非 glibc）、Prometheus / Grafana 钉的摘要是 amd64 平台摘要、基础镜像用标签（安全补丁自动进来、旧版也自动进来），`docker compose down -v` 会删数据卷，细节见阶段 7 说明的「已知限制」。
 - 多副本是**单机 Compose 的 `--scale`**，不是编排：nginx 解析有 5 秒窗口（靠重试兜底）、重试对非幂等请求也开着、
   副本不会自动补回、多副本共享同一份只读数据卷、探针只衡量成功率不衡量延迟分布；`/metrics` 经网关暴露且仍无鉴权；
   远程插件的 HTTP 客户端会继承宿主机代理设置。细节见阶段 8 说明的「已知限制」。

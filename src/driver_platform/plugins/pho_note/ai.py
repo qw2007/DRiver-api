@@ -21,6 +21,7 @@ from driver_platform.errors import (
     AiReplyUnparsableError,
     AiUnavailableError,
 )
+from driver_platform.observability.context import outbound_trace_headers
 
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_MAX_IMAGES = 6
@@ -97,7 +98,10 @@ def _post(
     """
     try:
         with httpx.Client(transport=transport, timeout=DEFAULT_TIMEOUT) as client:
-            response = client.post(url, headers=headers, json=payload)
+            # traceparent 一并发给模型服务：它若回显在响应头里，日志能把两边对上。
+            response = client.post(
+                url, headers={**headers, **outbound_trace_headers()}, json=payload
+            )
     except httpx.HTTPError as exc:
         raise AiUnavailableError(f"模型服务连不上（{type(exc).__name__}）") from exc
     if response.status_code >= 400:

@@ -23,7 +23,7 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
-from driver_platform.observability.context import current_request_id
+from driver_platform.observability.context import current_request_id, current_trace_id
 
 LOG_FORMAT_TEXT = "text"
 LOG_FORMAT_JSON = "json"
@@ -89,6 +89,9 @@ class JsonFormatter(logging.Formatter):
         if request_id is not None:
             payload["request_id"] = request_id
         payload.update(extra_fields(record))
+        trace_id = current_trace_id()
+        if trace_id is not None:
+            payload["trace_id"] = trace_id
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False, default=str)
@@ -107,6 +110,9 @@ class KeyValueFormatter(logging.Formatter):
         request_id = _request_id_of(record)
         if request_id is not None:
             parts.append(f"request_id={request_id}")
+        trace_id = current_trace_id()
+        if trace_id is not None:
+            parts.append(f"trace_id={trace_id}")
         parts.extend(f"{key}={value}" for key, value in extra_fields(record).items())
         line = " ".join(parts)
         if record.exc_info:

@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 
 from driver_platform.config import Settings
 from driver_platform.main import create_app
-from driver_platform.observability.context import request_id_var
+from driver_platform.observability.context import request_id_var, span_id_var, trace_id_var
 from driver_platform.tools import ToolRegistry
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -202,9 +202,10 @@ def isolated_request_context() -> Iterator[None]:
     生产里不存在这个问题——每个请求在自己的任务上下文里跑；只有同进程连续跑用例时，
     上一个用例设过的号才会漏到下一个用例（那会让「没有请求上下文」的断言假阳性）。
     """
-    token = request_id_var.set(None)
+    tokens = [request_id_var.set(None), trace_id_var.set(None), span_id_var.set(None)]
     yield
-    request_id_var.reset(token)
+    for var, token in reversed(list(zip((request_id_var, trace_id_var, span_id_var), tokens))):
+        var.reset(token)
 
 
 @pytest.fixture

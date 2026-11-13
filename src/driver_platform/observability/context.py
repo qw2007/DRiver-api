@@ -19,6 +19,18 @@ import uuid
 from contextvars import ContextVar
 
 REQUEST_ID_HEADER = "X-Request-ID"
+
+TRACEPARENT_HEADER = "traceparent"
+"""W3C Trace Context 的传播头：``version-trace_id-parent_id-flags``。"""
+
+#: 只接受 W3C 规定的形状：两个十六进制版本号、32 位 trace_id、16 位 parent_id、2 位 flags。
+_TRACEPARENT_PATTERN = re.compile(r"\A([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})\Z")
+
+_ZERO_TRACE = "0" * 32
+_ZERO_SPAN = "0" * 16
+
+trace_id_var: ContextVar[str | None] = ContextVar("driver_trace_id", default=None)
+span_id_var: ContextVar[str | None] = ContextVar("driver_span_id", default=None)
 """响应头名字：与日志字段、错误信封里的 ``request_id`` 一一对应。"""
 
 UNKNOWN_REQUEST_ID = "-"
@@ -62,3 +74,54 @@ def current_request_id() -> str | None:
     ``request_id`` 字段），``UNKNOWN_REQUEST_ID`` 只是日志里的显示填充。
     """
     return request_id_var.get()
+
+
+def parse_traceparent(value: str | None) -> tuple[str, str] | None:
+    """解析上游传来的 ``traceparent``，返回 ``(trace_id, parent_span_id)``。
+
+    全零的 trace_id / parent_id 与 ``ff`` 版本按规范视为无效（返回 ``None``，我们自己起一条）。
+    纯函数，不写上下文。
+    """
+    if not value:
+        return None
+    matched = _TRACEPARENT_PATTERN.match(value.strip().lower())
+    if matched is None:
+        return None
+    version, trace_id, parent_id, _flags = matched.groups()
+    if version == "ff" or trace_id == _ZERO_TRACE or parent_id == _ZERO_SPAN:
+        return None
+    return trace_id, parent_id
+
+
+def start_trace(parent: str | None = None) -> str:
+    """开始一个 span：沿用上游的 trace_id（有的话），自己生成 span_id。
+
+    返回要发给下游的 ``traceparent`` 字符串。HTTP 入口、远程插件调用、AI 与 WebDAV 出网
+    都用它——这样一次请求跨进程仍然是一条 trace，而不是每个进程各起一条。
+    """
+    parsed = parse_traceparent(parent)
+    trace_id = parsed[0] if parsed is not None else uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+    trace_id_var.set(trace_id)
+    span_id_var.set(span_id)
+    return f"00-{trace_id}-{span_id}-01"
+
+
+def current_traceparent() -> str | None:
+    """当前 span 的 ``traceparent``；没有 trace 上下文时是 ``None``。"""
+    trace_id = trace_id_var.get()
+    span_id = span_id_var.get()
+    if trace_id is None or span_id is None:
+        return None
+    return f"00-{trace_id}-{span_id}-01"
+
+
+def current_trace_id() -> str | None:
+    """当前 trace_id（日志里用它把跨进程的链路串起来）。"""
+    return trace_id_var.get()
+
+
+def outbound_trace_headers() -> dict[str, str]:
+    """给下游调用的头：没有 trace 上下文就返回空字典，调用方无脑 ``**`` 展开即可。"""
+    value = current_traceparent()
+    return {} if value is None else {TRACEPARENT_HEADER: value}

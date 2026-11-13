@@ -17,7 +17,13 @@ import logging
 from time import perf_counter
 from typing import Any
 
-from driver_platform.observability.context import REQUEST_ID_HEADER, ensure_request_id
+from driver_platform.observability.context import (
+    REQUEST_ID_HEADER,
+    TRACEPARENT_HEADER,
+    current_traceparent,
+    ensure_request_id,
+    start_trace,
+)
 from driver_platform.observability.metrics import METRICS, Metrics
 
 UNMATCHED_ROUTE = "unmatched"
@@ -28,6 +34,7 @@ UNKNOWN_METHOD = "UNKNOWN"
 _logger = logging.getLogger("driver_platform.access")
 
 _HEADER_BYTES = REQUEST_ID_HEADER.lower().encode("ascii")
+_TRACEPARENT_BYTES = TRACEPARENT_HEADER.encode("ascii")
 
 
 class ObservabilityMiddleware:
@@ -45,6 +52,8 @@ class ObservabilityMiddleware:
 
         method = scope.get("method") or UNKNOWN_METHOD
         request_id = ensure_request_id(_header(scope, _HEADER_BYTES))
+        # 上游带 traceparent 就接着它，没带就自己起一条：跨进程仍是一条 trace。
+        start_trace(_header(scope, _TRACEPARENT_BYTES))
         started = perf_counter()
         status = 500  # 兜底：即使响应头都没发出来（连接中断），也要有一条记账
 
@@ -54,8 +63,14 @@ class ObservabilityMiddleware:
                 status = message["status"]
                 raw = message.setdefault("headers", [])
                 # 先去重再追加：同一个头出现两次，客户端看到哪个是实现定义的。
-                headers = [(k, v) for k, v in raw if k.lower() != _HEADER_BYTES]
+                headers = [
+                    (k, v) for k, v in raw if k.lower() not in (_HEADER_BYTES, _TRACEPARENT_BYTES)
+                ]
                 headers.append((_HEADER_BYTES, request_id.encode("ascii")))
+                # 回给调用方的是**本进程这一跳**的 traceparent，调用方若再往下传要换成它。
+                traceparent = current_traceparent()
+                if traceparent is not None:
+                    headers.append((_TRACEPARENT_BYTES, traceparent.encode("ascii")))
                 message["headers"] = headers
             await send(message)
 

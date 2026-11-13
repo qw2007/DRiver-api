@@ -7,20 +7,55 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 包声明 supports >=3.11，但本机只有 3.14——不把低版本放进 CI，「兼容」就只是一句话。
+    # 3.14 之外的两个版本只跑测试：静态检查与覆盖率门禁跑一遍就够，重复三遍只是浪费额度。
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.14"]
+    # PostgreSQL 插件的集成测试要一个真库：没有它，tests/test_postgres_plugin.py 会整体 skip，
+    # 覆盖率也会掉一截（postgres.py 只覆盖到「配置校验」那一层）。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: demo
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: shop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U demo -d shop"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DRIVER_TEST_POSTGRES_DSN: postgresql://demo:secret@127.0.0.1:5432/shop
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
-      - run: ruff check .
-      - run: ruff format --check src tests deploy examples
-      - run: mypy
+      - name: 静态检查（只在主版本上跑）
+        if: matrix.python-version == '3.14'
+        run: |
+          ruff check .
+          ruff format --check src tests deploy examples
+          mypy
       # 覆盖率门禁：本地长期 95%，卡 90% 是「别一路掉下去」的底线，不是精确阈值。
-      - run: pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-under=90
+      - name: 测试与覆盖率门禁
+        if: matrix.python-version == '3.14'
+        run: pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-under=90
+      - name: 测试（兼容性矩阵）
+        if: matrix.python-version != '3.14'
+        run: pytest -q
       # 安全扫描：这两条以前只在开发机上手动跑过，接进 CI 才有回归价值。
-      - run: bandit -r src -q
-      - run: python -m pip_audit --progress-spinner off
+      - name: 安全扫描
+        if: matrix.python-version == '3.14'
+        run: |
+          bandit -r src -q
+          python -m pip_audit --progress-spinner off
 
   # 阶段 7：部署交付的 CI 部分。先静态校验部署描述，再把镜像真的建起来跑一次冒烟——
   # 「compose 能起」不能只在开发机上验证过一次就算数。
@@ -78,3 +113,33 @@ jobs:
       - name: 收尾
         if: always()
         run: docker compose down -v
+
+  # 镜像发布：本机 token 没有 write:packages（实测 push 报
+  # permission_denied: The token provided does not match expected scopes），所以推送放进 CI——
+  # Actions 自带的 GITHUB_TOKEN 在显式给 packages: write 权限时可以推 GHCR。
+  # 只在 master 上推；tag 用包版本 + 提交 sha 两个，集群清单（deploy/k8s）用版本号那个。
+  publish:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读包版本
+        id: version
+        run: echo "value=$(grep -oP '(?<=__version__ = ")[^"]+' src/driver_platform/__init__.py)" >> "$GITHUB_OUTPUT"
+
+      - name: 登录 GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: 构建并推送
+        run: |
+          image="ghcr.io/${{ github.repository_owner }}/driver-platform"
+          docker build --build-arg DRIVER_BUILD_STAMP="${{ github.sha }}" \
+            -t "$image:${{ steps.version.outputs.value }}" \
+            -t "$image:sha-${GITHUB_SHA::7}" .
+          docker push "$image:${{ steps.version.outputs.value }}"
+          docker push "$image:sha-${GITHUB_SHA::7}"

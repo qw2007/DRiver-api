@@ -11,12 +11,12 @@
 | 项 | 现状 |
 |---|---|
 | 项目 | 连接 AI Agent（Codex / Claude / ChatGPT…）与数据库等工具的**中间层驱动平台**：工具总线 + 协议适配 + 插件宿主（不是业务系统） |
-| 技术栈 | Python 3.11+（CI 与实测 3.14）、FastAPI、pydantic v2、uvicorn；MCP 走官方 SDK（可选依赖） |
+| 技术栈 | Python 3.11+（本机 3.14，CI 跑 3.11 / 3.12 / 3.14 矩阵）、FastAPI、pydantic v2、uvicorn；MCP 走官方 SDK（可选依赖）；镜像 `python:3.14-alpine` 多阶段构建（118 MB） |
 | 进度 | **阶段 0–8 已完成并推送**，另加 5 个非阶段交付（PhoNote 插件 P0–P3、两轮收口）；包版本 `0.1.0`，tag `v0.1.0` + GitHub Release（见第 3 节） |
-| 门禁现状 | `pytest` **375 passed**、覆盖率 **94.75%**（2668 语句 / 140 未覆盖，CI 卡 90% 底线）；`ruff check .` / `ruff format --check src tests deploy examples`（77 files）/ `mypy`（47 files，含 `deploy/` 与 `examples/`）/ `bandit` 全绿 |
-| CI | `test` 与 `deploy` 两个任务在 GitHub Actions 上全绿（[run 37953653712](https://github.com/qw2007/DRiver-api/actions/runs/37953653712)，提交 `894ff44`；`deploy` 里已含多副本 overlay / `nginx -t` / 验收脚本语法的静态校验） |
+| 门禁现状 | `pytest` **391 个用例、0 失败**（3 个 PostgreSQL 集成用例本机跳过，CI 带 `postgres` service 会真跑）、覆盖率 **93.12%**（2719 语句 / 187 未覆盖，CI 卡 90% 底线）；`ruff check .` / `ruff format --check src tests deploy examples`（79 files）/ `mypy`（47 files，含 `deploy/` 与 `examples/`）/ `bandit` 全绿 |
+| CI | 三个任务：`test`（Python **3.11 / 3.12 / 3.14** 矩阵 + `postgres` service）、`deploy`（compose 建镜像 + 健康轮询 + 接口冒烟）、`publish`（master 上推 GHCR `ghcr.io/qw2007/driver-platform:<版本>` 与 `:sha-<7位>`）；`deploy` 里还含多副本 overlay / `nginx -t` / 验收脚本语法的静态校验 |
 | 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3` |
-| 下一步 | 九阶段目标与两轮收口（四项决策 + 八项补齐）都已完成，第 3.3 节四项已拍板；剩下的是第 3.2 节里「需要外部资源或收益不足」的项（3.11/3.12 矩阵、真编排、镜像瘦身到 241 MB 以下、推镜像仓库、跨进程 traceparent） |
+| 下一步 | 九阶段目标与四轮收口都已完成（四项决策 + 八项补齐 + 五项编排分发）。**唯一没验证的是 K8s 清单**：本机起不来集群、`kind` 也下载不到，清单只做了结构静态校验（`tests/test_k8s_manifests.py`）；其余待办都要外部资源（GHCR 私有镜像的 `imagePullSecrets`、HPA 的 metrics-server） |
 
 ---
 
@@ -126,13 +126,13 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 
 1. ~~CI 覆盖率门禁未加~~ **已补**：CI 现在跑 `pytest --cov=driver_platform --cov-fail-under=90`（本地 94%，门禁卡 90% 是防一路下滑的底线）。
 2. ~~`bandit` / `pip-audit` 未进 CI~~ **已补**：CI 增加了 `bandit -r src -q` 与 `python -m pip_audit --progress-spinner off` 两步。
-3. **CI 只跑 Python 3.14**：`requires-python` 放宽到 3.11+，3.11 / 3.12 从未实测（要加矩阵很容易，就是三倍 CI 时间，发版前再加）。
+3. ~~CI 只跑 Python 3.14~~ **已补**：矩阵 `3.11 / 3.12 / 3.14`；静态检查、覆盖率门禁、bandit 与 pip-audit 只在 3.14 上跑，低版本只跑 `pytest -q`（结论以 CI 为准，本机无法对照复现）。
 4. ~~PostgreSQL 插件未落地~~ **已补**：`search_postgres`（`src/driver_platform/plugins/postgres.py`）复用 SQLite 的入参/输出模型，只读会话 + `connect_timeout=5`，可选依赖 `pip install 'driver-platform[postgres]'`，配置 `DRIVER_POSTGRES_DSN`；真实集成在本机 `postgres:16-alpine` 上跑过。
 5. **`mypy` 已覆盖 `src` + `deploy` + `examples`**（47 个文件），仍**不含 `tests/`**（mock 噪音大于收益）。
-6. **包版本已定 `0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随），发布物是 git tag `v0.1.0` + GitHub Release；**仍不推镜像仓库**（镜像由 `docker compose build` 现构）。
+6. **包版本已定 `0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随），发布物是 git tag `v0.1.0` + GitHub Release + **CI 的 `publish` 任务推 GHCR**（`:0.1.0` 与 `:sha-<7位>`；本机 token 无 `write:packages`，所以本机不推）。
 7. **阶段 6 远程插件的留白**：清单缓存 60 秒、连接失败重试一次（读超时与 5xx **不**重试）；仍无熔断/热更新/签名校验；`base_url` 是单点；每次调用新建 HTTP 客户端；客户端会继承宿主机代理设置。
-8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 默认无鉴权（可开 `DRIVER_METRICS_PROTECTED=1` 走同一套凭证）、指标是进程内的（重启归零）、无 traceparent（`request_id` 不跨进程）。
-9. **阶段 7 / 8 部署留白**：默认仍是单副本；容器已改非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU，但镜像仍 241 MB、第三方镜像钉 amd64 摘要、基础镜像用标签、compose 演示钥匙是明文默认值（对外必须 `.env` 覆盖）；多副本是单机 `--scale` 而非编排（不自动补副本、无跨宿主）。
+8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 默认无鉴权（可开 `DRIVER_METRICS_PROTECTED=1` 走同一套凭证）、指标是进程内的（重启归零）；跨进程链路已接 W3C `traceparent`（进站解析、出网传播、日志带 `trace_id`），但只做传播、不采样也不导出 span。
+9. **阶段 7 / 8 / 9 部署留白**：默认仍是单副本；容器已非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU，镜像换 `python:3.14-alpine` 多阶段后 **118 MB**（此前 245 MB），代价是 musl；第三方镜像仍钉 amd64 摘要、基础镜像用标签、compose 演示钥匙是明文默认值（对外必须 `.env` 覆盖）；多副本在 compose 里是单机 `--scale`，K8s 清单（`deploy/k8s/`，3 副本 + `maxUnavailable: 0` + HPA + PDB）**未在真集群 apply 过**——本机起不来集群、`kind` 也下载不到。
 
 ### 3.3 当年的四个开放项（已全部拍板）
 
@@ -140,7 +140,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 |---|---|
 | CI 加 `--cov-fail-under`？ | **加**，阈值 90%（`.github/workflows/ci.yml` 的 test 步骤） |
 | `bandit` / `pip-audit` 进 CI？ | **进**，与覆盖率门禁同一 job |
-| 是否上真正的编排层（K8s）？ | **不上**。阶段 8 用单机 compose `--scale` + nginx 网关验证了滚动不中断；K8s 要引 kind/helm，收益不在这一阶段 |
+| 是否上真正的编排层（K8s）？ | **上，但只到清单层**：`deploy/k8s/` 给了 Deployment/Service/HPA/PDB/kustomization 与结构测试，`kubectl apply -k` 一行起全套；本机没有可用集群，**未做真集群验收** |
 | 技术栈换不换？ | **不换**，继续 Python + FastAPI（九个阶段与 PhoNote 全建在上面） |
 
 产出这一组结论的对话在 2026-11-13（用户逐条确认）。若将来要推翻其中任何一条，先改 `docs/stages/stage-7.md` / `stage-8.md` 的对应决策记录，再动代码。

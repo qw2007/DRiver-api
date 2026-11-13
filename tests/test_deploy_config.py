@@ -111,7 +111,7 @@ def test_platform_service_runs_hardened() -> None:
 
     dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
     assert "USER driver" in dockerfile
-    assert "useradd --create-home --uid 10001" in dockerfile
+    assert "adduser -D -u 10001" in dockerfile
     assert "chmod -R a-w /app" in dockerfile
 
 
@@ -143,7 +143,7 @@ def test_platform_healthcheck_hits_the_health_endpoint() -> None:
     assert "/health" in dockerfile
     assert "ENTRYPOINT" in dockerfile
     assert 'CMD ["uvicorn"' in dockerfile
-    assert "FROM python:3.14-slim" in dockerfile
+    assert "FROM python:3.14-alpine" in dockerfile
     assert ":latest" not in dockerfile
 
 

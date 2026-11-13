@@ -26,6 +26,7 @@
 | — PhoNote 插件 P3 | 见文末 | 2026-11-13 | 见文末 | 备份 zip + WebDAV 同步：真实 HTTP 上 push → 换目录 pull，笔记与图片完整还原 |
 | — 收口四项决策 | 见文末 | 2026-11-13 | 见文末 | CI 覆盖率硬门禁 + 安全扫描；笔记模板；Agent 只读窄钥匙 |
 | — 收口八项：能力补齐 | 见文末 | 2026-11-13 | 见文末 | PostgreSQL 插件；包版本 0.1.0；远程插件重试与清单缓存；`/metrics` 可选鉴权；容器非 root + 只读根文件系统；截图默认压 WebP |
+| — 收口五项：编排与分发 | 见文末 | 2026-11-13 | 见文末 | 3.11/3.12 CI 矩阵；K8s 清单；镜像 245→118 MB；GHCR 发布任务；W3C traceparent 跨进程；Electron 热键实测 |
 
 ---
 
@@ -389,12 +390,69 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 
 ---
 
+## 非阶段交付：收口五项——编排与分发（2026-11-13）
+
+### 目标
+
+把「只在开发机上成立」的五件事做成可验证的交付物：低版本兼容、真编排层、镜像体积、镜像分发、跨进程链路。
+
+### 交付物
+
+1. **CI 矩阵**（`.github/workflows/ci.yml`）：`test` 任务跑 `3.11 / 3.12 / 3.14` 三档；静态检查、覆盖率门禁、
+   bandit 与 pip-audit 只在 3.14 上跑一遍（重复三遍只是耗额度）。
+2. **K8s 清单**（`deploy/k8s/`）：`namespace / secret.example / deployment / service / hpa / pdb / kustomization`，
+   `kubectl apply -k deploy/k8s` 一次起全套；3 副本、`maxUnavailable: 0`、只读根文件系统、非 root、drop ALL、
+   `/health` 探针、`emptyDir` 数据卷、CPU 70% 的 HPA、`minAvailable: 2` 的 PDB。
+3. **镜像瘦身**（`Dockerfile`）：多阶段构建 + `python:3.14-alpine`，venv 独立安装、删 pip/setuptools/wheel 与 `.pyc`；
+   镜像从 **245 MB 降到 118 MB**（本机 `docker images` 实测）。
+4. **GHCR 发布**（`publish` 任务）：仅 master、`permissions: packages: write`，推 `:<版本>` 与 `:sha-<7位>` 两个 tag。
+5. **W3C traceparent 跨进程**：`observability/context.py` 解析/生成 `traceparent`，ASGI 中间件接着上游 trace 换本进程 span
+   并在响应头回写；日志带 `trace_id`；出网点（远程插件、AI 调用、WebDAV 同步）用 `outbound_trace_headers()` 带给下游。
+6. **Electron 热键实测**：真启 Electron，`AppActivate` + `SendKeys "^+s"`，界面上出现「已截图: cap_18e690be0d2d4247」、
+   图片区「剩 1 张」，`GET /notes/api/captures` 读到 `image/webp 1600 x 900 107230 bytes source=shell`。
+
+### 关键决策与理由
+
+- **矩阵只跑测试**：ruff/mypy/pytest+覆盖率在 3.14 上一次就够；3.11/3.12 的增量信息是「代码能不能 import、测试过不过」。
+- **K8s 与 Compose 并存**：Compose 保留为「一台机器一条命令」的对照物，K8s 是交给编排层的形态；两者共用同一个镜像。
+- **K8s 数据卷用 emptyDir**：SQLite 不支持多副本共享写，演示库每副本一份；真要共享数据应开 PostgreSQL 插件（已落地）。
+- **换 alpine 换掉 glibc**：本项目依赖全是纯 Python + 有 musllinux 轮子的扩展（uvloop/httptools）；换来 127 MB 的体积差，
+  代价是「与 Debian 上的行为差异需自行留意」，写进已知限制。可选的 psycopg / Pillow 不进镜像。
+- **不把删除放在单独一层**：一开始在 slim 上「删标准库测试套件」没有任何效果（`docker images` 仍是 227 MB）——
+  删除写在后续层只是加白洞，删不掉前面层里的字节；真正的体积来自换基础镜像。
+- **traceparent 只做传播**：不引 OTel SDK、不做 span 树与采样；每个进程在响应头回写自己的 span，日志里带 `trace_id`，
+  足够把「一次请求穿过网关 → 平台 → 远程插件/AI/WebDAV」串起来。
+
+### 验收证据
+
+- 门禁：`ruff check .` 通过、`ruff format --check src tests deploy examples` 77 文件、`mypy` 47 文件、
+  `pytest --cov --cov-fail-under=90` 全绿（本机 3.14）。
+- 镜像：`driver-platform:0.1.0` = **118 MB**（此前 245 MB）；`docker compose up -d` 三容器 healthy，
+  `POST /v1/tools/execute`（`read-key`）返回上海两行；响应头带 `traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-128e7b3edda8405e-01`
+  （上游 trace 保留、span 换新）。
+- 热键：如上第 6 条，截图落成 `media/8a/b6/8ab647ce…webp`。
+- GHCR：本机 `docker push ghcr.io/qw2007/driver-platform:0.1.0` 失败，原文
+  `error from registry: permission_denied: The token provided does not match expected scopes.`
+  （本机 token 只有 `gist, read:org, repo, workflow`）——推送因此改为由 CI 的 `GITHUB_TOKEN` 完成。
+- K8s：**没有集群可跑**（Docker Desktop 的内置 Kubernetes 在 7 分钟内始终没有生成 kubeconfig；
+  `kind` 的二进制从 GitHub Releases 下载返回 HTTP 000；`kubectl apply --dry-run=client` 也需要 API server 做 discovery）。
+  因此只做到结构静态校验：`tests/test_k8s_manifests.py` 7 个用例守住副本数/策略/探针/securityContext/Secret 引用/
+  镜像 tag 与包版本一致/Service 与 PDB 的 selector 一致。**清单未在真集群上 apply 过**。
+
+### 已知限制
+
+- 3.11/3.12 的结论只来自 CI，本机无法对照复现。
+- K8s 清单未经真集群验证；HPA 依赖 metrics-server（kind/minikube 默认不装）。
+- alpine 镜像用 musl；若将来引入需要 glibc 的扩展（某些二进制轮子），需回到 slim 或换 musllinux 轮子。
+- 镜像仍钉 amd64 摘要的第三方服务（Prometheus/Grafana）与标签基础镜像的取舍未变；GHCR 仓库为私有，拉取需 `imagePullSecrets`。
+- traceparent 不采样、不导出 span；下游服务若忽略该头，链路只到「本进程 → 下游进程」这一跳。
+
 ## 当前状态（截至最新提交）
 
 - **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 5 个非阶段交付（PhoNote 插件 P0/P1/P2/P3 + 收口四项决策 + 收口八项能力补齐，见上文；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **77 files** already formatted；`mypy` → Success: no issues found in **47 source files**（已覆盖 `src` + `deploy` + `examples`）；`pytest --cov --cov-fail-under=90` → **375 passed**，覆盖率 **94.75%**（2668 语句 / 140 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
-- **包版本**：**`0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随；对外契约版本仍走各工具的 `contract_version`，与包版本解耦）；发布物是 git tag `v0.1.0` + GitHub Release，不推镜像仓库；
-- **下一步**：九阶段目标已收口，`docs/handoff.md` 3.2/3.3 的留白与待拍板项已按 2026-11-13 的结论改写。还开着的都是「要么需要外部资源、要么收益不足」的项：3.11/3.12 的 CI 矩阵、真编排层（K8s）、镜像瘦身（当前 241 MB）、推镜像仓库、跨进程 traceparent。
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **79 files** already formatted；`mypy` → Success: no issues found in **47 source files**（已覆盖 `src` + `deploy` + `examples`）；`pytest --cov --cov-fail-under=90` → **391 个用例、0 失败**（3 个 PostgreSQL 集成用例本机无库跳过；CI 里带 `postgres` service 会真跑），覆盖率 **93.12%**（2719 语句 / 187 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
+- **包版本**：**`0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随；对外契约版本仍走各工具的 `contract_version`，与包版本解耦）；发布物是 git tag `v0.1.0` + GitHub Release + CI 推到 GHCR 的镜像（`:0.1.0` 与 `:sha-<7位>`）；
+- **下一步**：九阶段目标与四轮收口全部落地（详见上文各节）。仍未验证的一件事是 **K8s 清单没有在真集群上 apply 过**（本机 Docker Desktop 的内置集群起不来、`kind` 也下载不到）；除此之外的待办都是「需要外部资源或收益不足」：镜像推私有仓库的拉取凭据（`imagePullSecrets`）、HPA 依赖的 metrics-server、3.11/3.12 的本机复现。
 
 ## 已知限制（汇总）
 

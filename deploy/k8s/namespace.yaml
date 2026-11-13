@@ -1,0 +1,8 @@
+#: K8s 交付物（阶段 9 收口）。compose 是「一台机器一条命令」的形态，这里是「交给编排层」的形态：
+#: 副本数、自愈、滚动发布、资源上限都由集群负责，不再靠 scale 参数与脚本。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: driver-platform
+  labels:
+    app.kubernetes.io/name: driver-platform

@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from driver_platform.errors import SyncFailedError, SyncNotConfiguredError
+from driver_platform.observability.context import outbound_trace_headers
 from driver_platform.plugins.pho_note.store import Store, _write_atomically
 
 DEFAULT_KEEP = 5
@@ -77,6 +78,7 @@ class WebDAVClient:
         return httpx.Client(
             base_url=self._config.url.rstrip("/") + "/",
             auth=auth,
+            headers=outbound_trace_headers(),
             timeout=self._timeout,
             transport=self._transport,
         )

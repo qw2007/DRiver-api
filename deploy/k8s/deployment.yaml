@@ -1,0 +1,104 @@
+#: 驱动平台的 K8s 部署：3 副本、只读根文件系统、非 root、健康探针、资源上限。
+#:
+#: 两个刻意的选择：
+#:   1) 数据卷是 emptyDir —— 演示库由入口脚本在容器启动时种出来，每个副本一份。
+#:      SQLite 不能多副本共享写，所以「真要多副本 + 共享数据」应当开 PostgreSQL 插件
+#:      （DRIVER_PLUGINS=postgres），而不是把 /data 挂成 RWO 卷。这点写在 README 的已知限制里。
+#:   2) 探针打 /health 而不是 /metrics：/metrics 可能被 DRIVER_METRICS_PROTECTED 保护起来。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: driver-platform
+  namespace: driver-platform
+  labels:
+    app.kubernetes.io/name: driver-platform
+    app.kubernetes.io/component: server
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: driver-platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: driver-platform
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: driver-platform
+          # 镜像由 CI 推到 GHCR（见 .github/workflows/ci.yml 的 publish 任务）；
+          # 集群里拉它需要 imagePullSecrets，或把仓库设为公开。
+          image: ghcr.io/qw2007/driver-platform:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DRIVER_PLUGINS
+              value: sqlite
+            - name: DRIVER_SEED_DEMO_DB
+              value: "1"
+            - name: DRIVER_METRICS_ENABLED
+              value: "1"
+            - name: DRIVER_LOG_FORMAT
+              value: json
+            - name: DRIVER_AUTH_MODE
+              value: required
+            - name: DRIVER_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: driver-platform-keys
+                  key: api-keys
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 30

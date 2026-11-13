@@ -40,6 +40,7 @@ from driver_platform.errors import (
     RemoteUnavailableError,
     sanitize_validation_errors,
 )
+from driver_platform.observability.context import outbound_trace_headers
 from driver_platform.plugins.base import PLUGIN_VERSION_PATTERN, Plugin
 from driver_platform.tools.base import Tool, ToolManifest
 
@@ -139,7 +140,7 @@ class RemoteClient:
             attempt += 1
             try:
                 with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
-                    response = client.get(url)
+                    response = client.get(url, headers=_trace_headers())
                 break
             except httpx.HTTPError as exc:
                 # GET 是幂等的：连接失败与超时都可以安全重试一次。
@@ -175,7 +176,7 @@ class RemoteClient:
                 async with httpx.AsyncClient(
                     timeout=self.timeout, transport=self._transport
                 ) as client:
-                    response = await client.post(url, json=body)
+                    response = await client.post(url, json=body, headers=_trace_headers())
                 break
             except httpx.HTTPError as exc:
                 # 只有「连接没建立」才重试：那种情况下请求没到远端，重试不会重复执行。
@@ -291,6 +292,11 @@ class RemotePlugin(Plugin):
 
     def tools(self) -> list[Tool[Any, Any]]:
         return list(self._tools)
+
+
+def _trace_headers() -> dict[str, str]:
+    """把当前 trace 带给远端：远端照抄进自己的日志，就得出一条跨进程的链路。"""
+    return outbound_trace_headers()
 
 
 def _is_connect_failure(exc: httpx.HTTPError) -> bool:

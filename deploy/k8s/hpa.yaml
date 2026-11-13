@@ -1,0 +1,29 @@
+#: HPA：负载上来自己加副本，与阶段 8 的「脚本滚动 + compose --scale」对应同一件事——
+#: 「副本数由谁决定」在编排层是控制器，不再是人。
+#: 前提：集群装了 metrics-server（kind/minikube 默认没有，需单独装）；没装时 HPA 会停在
+#: 「unknown」而不会报错，所以 CI 只做静态校验，不做运行期断言。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: driver-platform
+  namespace: driver-platform
+  labels:
+    app.kubernetes.io/name: driver-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: driver-platform
+  minReplicas: 3
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # 缩容慢一点：请求量抖动时不要刚扩完就收，滚动期间少一次重建。
+      stabilizationWindowSeconds: 120

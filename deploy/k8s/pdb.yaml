@@ -1,0 +1,15 @@
+#: PDB：节点维护/驱逐时至少保留 2 个副本可用。
+#: minAvailable=2 与 deployment 的 maxUnavailable=0 是同一个目标的两面：
+#: 滚动更新自己保证不减少可用副本，驱逐则靠 PDB 拦一下。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: driver-platform
+  namespace: driver-platform
+  labels:
+    app.kubernetes.io/name: driver-platform
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: driver-platform
