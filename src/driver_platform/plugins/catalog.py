@@ -18,6 +18,7 @@ from driver_platform.errors import InvalidConfigurationError, UnknownPluginError
 from driver_platform.plugins.base import Plugin
 from driver_platform.plugins.pho_note import PhoNotePlugin
 from driver_platform.plugins.pho_note.ai import AIConfig
+from driver_platform.plugins.pho_note.sync import SyncConfig
 from driver_platform.plugins.sqlite import SqlitePlugin
 
 if TYPE_CHECKING:  # 只在类型检查期 import：config 会反过来 import 远程插件（见下）
@@ -42,6 +43,12 @@ def _build_pho_note(settings: Settings) -> Plugin:
             api_key=settings.notes_llm_api_key,
             model=settings.notes_llm_model,
             max_images=settings.notes_llm_max_images,
+        ),
+        sync=SyncConfig(
+            url=settings.notes_webdav_url,
+            user=settings.notes_webdav_user,
+            password=settings.notes_webdav_password,
+            keep=settings.notes_webdav_keep,
         ),
     )
 

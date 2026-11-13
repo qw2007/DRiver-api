@@ -20,7 +20,7 @@ MCP_IMPORTERS = {"protocols/mcp.py", "protocols/mcp_server.py"}
 #: - ``plugins/pho_note/ai.py``：笔记插件的模型客户端，替用户访问他配置的模型服务。
 #: 两者都是「按配置访问一个外部 HTTP 服务」，都带超时与错误映射。再加第三处要显式改这张表，
 #: 让「谁在出网」永远是可数的。
-HTTPX_IMPORTERS = {"plugins/remote.py", "plugins/pho_note/ai.py"}
+HTTPX_IMPORTERS = {"plugins/remote.py", "plugins/pho_note/ai.py", "plugins/pho_note/sync.py"}
 
 #: 与协议适配无关、因此绝不该被适配器 import 的第三方 SDK 根名。
 FORBIDDEN_IN_OPENAI_ADAPTER = {"mcp", "openai", "anthropic", "langchain"}

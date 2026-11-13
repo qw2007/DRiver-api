@@ -23,6 +23,7 @@
 | — PhoNote 插件 P0 | 见文末 | 2026-11-10 | 见文末 | 六个 `note_*` 工具；截图 → 缓冲区 → 组笔记 → 读回 |
 | — PhoNote 插件 P1 | 见文末 | 2026-11-10 | 见文末 | 十七个工具 + `/notes/api/*` REST 层；树增删改移、批注、版本回滚、导出 |
 | — PhoNote 插件 P2 | 见文末 | 2026-11-10 | 见文末 | AI 总结、讨论与增量补丁（`find` 唯一匹配才套用）；manual 模式不需要 key |
+| — PhoNote 插件 P3 | 见文末 | 2026-11-13 | 见文末 | 备份 zip + WebDAV 同步：真实 HTTP 上 push → 换目录 pull，笔记与图片完整还原 |
 
 ---
 
@@ -300,10 +301,39 @@
 **已知限制**：`ai.py` 只实现两家协议，没有重试、限流与流式；随请求最多带 6 张图（`DRIVER_NOTES_LLM_MAX_IMAGES`），长笔记可能超出模型上下文；批注仍只以 JSON 存锚点；壳的 Electron 仍未在本机启动过、`npm install` 未验证。
 
 ---
+## 非阶段交付：PhoNote 插件 P3（2026-11-13）
+
+**目标**：让笔记能在设备间搬——先把「一份自包含的备份」做出来（`note_backup`），再把备份推到 WebDAV（`note_sync_push`）与从远端还原（`note_sync_pull`）。对应设计文档 §7 与 §9。
+
+**交付物**：新建 `plugins/pho_note/sync.py`（`SyncConfig`、`WebDAVClient`（`MKCOL`/`PUT`/`GET`/`DELETE` 四个动词够用）、`push`/`pull`/`status`、远端 `manifest.json`、本地 `sync.json` 状态）；`store.py` 加 `reload`/`snapshot_bytes`（`VACUUM INTO`）/`media_files`/`fingerprint`/`backup_db`/`backup_zip`；`errors.py` 加 `sync_not_configured`(400)/`sync_failed`(502)；`config.py` 加四个 `DRIVER_NOTES_WEBDAV_*` 开关与校验；`tools.py` 加四个工具（总数 26）；`api.py` 加 `POST /backup`、`GET /sync/status`、`POST /sync/push`、`POST /sync/pull`；`tests/test_pho_note_p3.py`（12 例）+ `tests/test_config.py` 补 5 例 WebDAV 配置；出网白名单加第三处 `plugins/pho_note/sync.py`。
+
+**关键决策与理由**：
+- **manifest 最后写**：远端 `phonote/manifest.json` 是提交点，先传媒体与快照、最后改 manifest；中途断网只会留下没人引用的孤儿文件，不会让某台设备 pull 到半套数据；
+- **只传远端缺的媒体**：按 sha256 逐个 `GET` 判定，图片是内容寻址的，重复推送不会重复上传（第二台设备只拉自己缺的那几张）；
+- **快照用 `VACUUM INTO`、按 `KEEP` 轮换**：直接拷 `phonote.db` 会漏掉 WAL 里的已提交页；`VACUUM INTO` 出的是一致副本，名字带 UTC 时间戳与 sha8 前缀，超过 `KEEP` 的旧快照在 manifest 落定后删；
+- **脏检查比内容指纹、不比文件 hash**：`VACUUM INTO` 的快照与活动库**字节不同**（页布局会重排），拿文件 sha256 做判据会导致「刚 push 完就 pull 也被拒」；改成 `COUNT(*)` 与 `MAX(updated_at)` 组成的内容指纹，VACUUM/重开/WAL checkpoint 都不影响它，任何一次写都会变；
+- **pull 先备份再原子替换**：先把当前库落到 `backups/pre-pull-<时间戳>.db`，关连接、删 `-wal`/`-shm`、`os.replace` 覆盖、再重开——中途失败仍能人工捡回旧库；
+- **单主设备、不做双向合并**：本地有未推送改动时 pull 直接拒绝（`sync_failed`），而不是尝试字段级合并；冲突合并的成本远超「一个设备主导写、其他设备只读」这个真实用法；
+- **同步状态放本地 `sync.json`**：远端只存数据、不存「谁推到哪」；每台设备自己记 `pushed_fingerprint`/`pushed_at`，避免多个设备争写同一份状态。
+
+**验收证据**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **75 files**；`mypy` → Success: no issues found in **41 source files**；`pytest` → exit 0，**354 passed**，覆盖率 **95%**（2495 语句 / 137 未覆盖；`pho_note/sync.py` 90%、`store.py` 95%、`tools.py` 98%、`api.py` 93%）。真实 HTTP（本机起 stdlib WebDAV 假服务，`NO_PROXY=127.0.0.1`，内存字典存对象）：
+
+```
+push: {"pushed": true, "snapshot": "db/20261113T113755Z-de19b506.db", "db_sha256": "de19b506...4f1e49bd", "uploaded_media": 1, "media_total": 1, "pruned": []}
+pull: {"pulled": true, "snapshot": "db/20261113T113755Z-de19b506.db", "db_sha256": "de19b506...4f1e49bd", "backup": ".tmp\sync-smoke\two\backups\pre-pull-20261113T113756Z.db", "fetched_media": 1, "media_total": 1}
+restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "image_on_disk": true, "tree": ["课程"], "dirty_before": false, "dirty_after": false}
+```
+
+即：目录 `one` 里建目录 + 上传一张图 + 组一篇笔记 → push 传 1 张媒体与 1 份快照 → 全新的目录 `two` 里先备份再 pull → 笔记正文、标题、图片文件与树结构全部还原，pull 前后 `dirty` 都是 `false`。
+
+**已知限制**：只实现 `MKCOL`/`PUT`/`GET`/`DELETE` 四个动词（够用，但没有 `PROPFIND` 列目录、不支持 `MOVE`）；没有断点续传与分块上传，快照大了就是一次性 PUT；远端只增不删媒体（本地删掉的图仍留在远端，靠 `KEEP` 轮换快照间接收敛）；不做双向合并、单主设备；`sync.json` 是本地状态，换设备后第一次 `status` 会显示「未推送」但不影响 pull；**真实的坚果云/Nextcloud 都没连过**，只用本机写的假 WebDAV 服务（真 HTTP）验过。
+
+---
+
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 3 个非阶段交付（PhoNote 插件 P0/P1/P2，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **73 files** already formatted；`mypy` → Success: no issues found in **40 source files**；`pytest` → **335 passed**，覆盖率 **95%**（2221 语句 / 120 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 4 个非阶段交付（PhoNote 插件 P0/P1/P2/P3，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **75 files** already formatted；`mypy` → Success: no issues found in **41 source files**；`pytest` → **354 passed**，覆盖率 **95%**（2495 语句 / 137 未覆盖；`bandit -r src -q` / `pip-audit` 在阶段 5 的工具链接入后未再单独复跑）；
 - **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
 - **下一步**：九阶段目标已收口。要继续往下走，先处理 [`docs/handoff.md`](docs/handoff.md) 第 3.3 节的待拍板项（CI 是否加 `--cov-fail-under`、bandit/pip-audit 是否进 CI、是否需要真正的编排层、包版本与发布流程），以及阶段 8 已知限制里最接近生产的两条：镜像瘦身/非 root 运行、`/metrics` 收进内网。
 
@@ -319,4 +349,4 @@
 8. 部署的默认形态是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
 9. 多副本是**单机 Compose 的 `--scale`**、不是编排（不自动补副本、无滚动策略、跨宿主无从谈起），nginx 解析有 5 秒窗口，重试对非幂等请求也开着，多副本共享同一份只读数据卷，探针只衡量成功率，`/metrics` 经网关暴露且仍无鉴权，远程插件的 HTTP 客户端会继承宿主机代理设置，详见阶段 8 说明；
 10. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许；本机 DSH 会话里 **Python 子进程**连 `danger-full-access` 都解不开（写不了工作区外、打不开 Docker 命名管道），所以本机滚动验收用等价 PowerShell 序列替代 `deploy/rollout.py`（见阶段 8 说明的验收证据第 5 节）。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
-11. **PhoNote 插件（P0/P1/P2）**：单机单用户（SQLite + 本地文件，WebDAV 同步属 P3）；批注锚点里的选中文字/图片区域坐标仍是占位 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 只有 openai/anthropic/manual 三档、无重试与流式、每次最多 6 张图；多屏只截第一屏；壳的 `npm install` 与 Electron 启动都未在本机验证。
+11. **PhoNote 插件（P0/P1/P2/P3）**：单机单用户（SQLite + 本地文件）；同步是单主设备、不做双向合并，只实现 `MKCOL`/`PUT`/`GET`/`DELETE` 四个动词、没有断点续传，远端只增不删媒体，真实云盘（坚果云/Nextcloud）未连过；批注锚点里的选中文字/图片区域坐标仍是占位 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 只有 openai/anthropic/manual 三档、无重试与流式、每次最多 6 张图；多屏只截第一屏；壳的 `npm install` 与 Electron 启动都未在本机验证。

@@ -21,6 +21,7 @@ import os
 import sqlite3
 import threading
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -124,6 +125,11 @@ def _now() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
+
+
+def _stamp() -> str:
+    """文件名用的时间戳（同一秒内备份两次会撞名，但覆盖自己对备份场景无害）。"""
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _detect_media(data: bytes) -> tuple[str, str]:
@@ -615,6 +621,90 @@ class Store:
         except OSError as exc:
             raise NoteNotFoundError(f"图片文件丢失：{capture['path']}") from exc
         return capture["media_type"], data
+
+    # ------------------------------------------------------------- 备份与同步
+
+    def reload(self) -> None:
+        """关掉再打开连接（pull 覆盖了库文件之后必须走这一步）。"""
+
+        with self._lock:
+            self._connection.close()
+            self._connection = self._open()
+
+    def snapshot_bytes(self) -> bytes:
+        """``VACUUM INTO`` 出一份一致的库文件副本（WAL 模式下直接拷 .db 会缺内容）。"""
+
+        with self._lock:
+            target = self.root / f".snapshot-{os.getpid()}.db"
+            target.unlink(missing_ok=True)
+            try:
+                self._connection.execute("VACUUM INTO ?", (str(target),))
+                return target.read_bytes()
+            finally:
+                target.unlink(missing_ok=True)
+
+    def media_files(self) -> list[dict[str, Any]]:
+        """所有图片的（sha256, 相对路径, 媒体类型），同步时按 sha 去重。"""
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT sha256, path, media_type FROM captures ORDER BY sha256"
+            ).fetchall()
+        return [
+            {"sha256": row["sha256"], "path": row["path"], "media_type": row["media_type"]}
+            for row in rows
+        ]
+
+    def fingerprint(self) -> str:
+        """内容指纹：用「行数 + 最近时间」而不是文件字节数。
+
+        ``VACUUM INTO`` 出来的快照与活动库文件**字节不同**（页布局重排），
+        所以判「本地有没有未推送改动」不能比文件 sha256；这里比的是内容摘要，
+        VACUUM、重开进程、WAL checkpoint 都不影响它，任何一次写都会变。
+        """
+
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT (SELECT COUNT(*) FROM nodes),
+                       (SELECT COALESCE(MAX(updated_at), '') FROM nodes),
+                       (SELECT COUNT(*) FROM captures),
+                       (SELECT COUNT(*) FROM revisions),
+                       (SELECT COUNT(*) FROM annotations),
+                       (SELECT COUNT(*) FROM messages)
+                """
+            ).fetchone()
+        joined = "|".join(str(value) for value in row)
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+    def backup_db(self) -> Path:
+        """同步前先把当前库落一份到 ``backups/``（pull 覆盖失败时还能捡回来）。"""
+
+        target = self.root / "backups" / f"pre-pull-{_stamp()}.db"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomically(target, self.snapshot_bytes())
+        return target
+
+    def backup_zip(self) -> dict[str, Any]:
+        """把库快照和全部图片打成一个 zip（换机器/离线恢复用）。"""
+
+        target = self.root / "backups" / f"backup-{_stamp()}.zip"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = self.snapshot_bytes()
+        written = 0
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("phonote.db", snapshot)
+            for item in self.media_files():
+                source = self.root / item["path"]
+                if not source.is_file():
+                    continue
+                archive.write(source, item["path"])
+                written += 1
+        return {
+            "path": str(target),
+            "bytes": target.stat().st_size,
+            "media_files": written,
+        }
 
     # ------------------------------------------------------------- 导出
 

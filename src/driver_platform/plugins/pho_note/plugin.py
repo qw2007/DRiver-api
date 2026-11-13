@@ -15,18 +15,22 @@ from driver_platform.errors import InvalidConfigurationError
 from driver_platform.plugins.base import Plugin
 from driver_platform.plugins.pho_note.ai import AIConfig, NoteAI, build_provider
 from driver_platform.plugins.pho_note.store import Store
+from driver_platform.plugins.pho_note.sync import SyncConfig
 from driver_platform.plugins.pho_note.tools import build_tools
 from driver_platform.tools.base import Tool
 
 
 class PhoNotePlugin(Plugin):
     plugin_id = "pho_note"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "PhoNote 笔记插件：截图缓冲区、自由文件树、Markdown 笔记与 AI 修订"
 
-    def __init__(self, root: str, ai: AIConfig | None = None) -> None:
+    def __init__(
+        self, root: str, ai: AIConfig | None = None, sync: SyncConfig | None = None
+    ) -> None:
         self._root = root
         self._config = ai or AIConfig()
+        self._sync = sync or SyncConfig()
         self._store: Store | None = None
         self._ai: NoteAI | None = None
         self._tools: list[Tool[Any, Any]] = []
@@ -43,7 +47,7 @@ class PhoNotePlugin(Plugin):
         ai = NoteAI(self._config, provider=build_provider(self._config))
         self._store = store
         self._ai = ai
-        self._tools = build_tools(store, ai)
+        self._tools = build_tools(store, ai, self._sync)
 
     @property
     def store(self) -> Store | None:
@@ -53,6 +57,10 @@ class PhoNotePlugin(Plugin):
     @property
     def ai(self) -> NoteAI | None:
         return self._ai
+
+    @property
+    def sync(self) -> SyncConfig:
+        return self._sync
 
     def tools(self) -> list[Tool[Any, Any]]:
         return list(self._tools)

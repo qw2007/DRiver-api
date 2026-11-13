@@ -8,6 +8,10 @@ from driver_platform.config import (
     ENV_LOG_FORMAT,
     ENV_LOG_LEVEL,
     ENV_METRICS_ENABLED,
+    ENV_NOTES_WEBDAV_KEEP,
+    ENV_NOTES_WEBDAV_PASSWORD,
+    ENV_NOTES_WEBDAV_URL,
+    ENV_NOTES_WEBDAV_USER,
     ENV_PLUGINS,
     ENV_PROTOCOLS,
     ENV_REMOTE_PLUGIN_ENABLED,
@@ -211,3 +215,41 @@ def test_bad_remote_timeout_fails_at_startup(raw: str):
 def test_remote_timeout_invariant_also_holds_for_direct_construction(timeout: float):
     with pytest.raises(InvalidConfigurationError):
         Settings(remote_timeout=timeout)
+
+
+def test_webdav_defaults_are_off() -> None:
+    settings = Settings()
+
+    assert settings.notes_webdav_url == ""
+    assert settings.notes_webdav_user == ""
+    assert settings.notes_webdav_password == ""
+    assert settings.notes_webdav_keep == 5
+
+
+def test_webdav_settings_come_from_the_environment() -> None:
+    settings = Settings.from_env(
+        {
+            ENV_NOTES_WEBDAV_URL: " https://dav.example.com/phonote ",
+            ENV_NOTES_WEBDAV_USER: " me ",
+            ENV_NOTES_WEBDAV_PASSWORD: " p@ss word ",
+            ENV_NOTES_WEBDAV_KEEP: "3",
+        }
+    )
+
+    assert settings.notes_webdav_url == "https://dav.example.com/phonote"
+    assert settings.notes_webdav_user == "me"
+    assert settings.notes_webdav_password == " p@ss word "
+    assert settings.notes_webdav_keep == 3
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-2", "2.5"])
+def test_webdav_keep_must_be_a_positive_integer(raw: str) -> None:
+    with pytest.raises(InvalidConfigurationError) as caught:
+        Settings.from_env({ENV_NOTES_WEBDAV_KEEP: raw})
+
+    assert ENV_NOTES_WEBDAV_KEEP in str(caught.value)
+
+
+def test_webdav_keep_is_validated_on_direct_construction() -> None:
+    with pytest.raises(InvalidConfigurationError):
+        Settings(notes_webdav_keep=0)

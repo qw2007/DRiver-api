@@ -137,24 +137,24 @@ curl -X DELETE http://127.0.0.1:8000/v1/plugins/remote/echo_farm -H "X-API-Key: 
 
 `DRIVER_REMOTE_PLUGINS='id=base_url'` 可以在**启动期**装载远程插件；此时远端连不上进程就起不来——这是刻意的（宁可起不来，也不要带着一半坏工具对外服务），代价是部署编排里必须安排启动顺序。
 
-### 接笔记插件 pho_note（PhoNote P0/P1/P2）
+### 接笔记插件 pho_note（PhoNote P0/P1/P2/P3）
 
-`pho_note` 是 PhoNote 桌面应用的领域插件：截图进缓冲区 → 任意多图组成笔记 → 读回/改/批注/版本 → AI 总结、讨论与增量补丁。它只依赖平台契约，UI 与全局热键在[独立仓库](https://github.com/qw2007/PhoNote)的 Electron 壳里。
+`pho_note` 是 PhoNote 桌面应用的领域插件：截图进缓冲区 → 任意多图组成笔记 → 读回/改/批注/版本 → AI 总结、讨论与增量补丁 → 备份与 WebDAV 同步。它只依赖平台契约，UI 与全局热键在[独立仓库](https://github.com/qw2007/PhoNote)的 Electron 壳里。
 
 ```bash
 DRIVER_PLUGINS=pho_note DRIVER_NOTES_DIR="$HOME/PhoNote" DRIVER_NOTES_UI=1 \
 DRIVER_NOTES_LLM=manual \
   .venv/Scripts/python -m uvicorn driver_platform.main:app --host 127.0.0.1 --port 8000
 
-curl http://127.0.0.1:8000/v1/tools        # echo + 二十二个 note_* 工具
+curl http://127.0.0.1:8000/v1/tools        # echo + 二十六个 note_* 工具
 curl http://127.0.0.1:8000/notes/api/tree  # 给壳用的 REST 层（DRIVER_NOTES_UI=1 才挂）
 ```
 
-二十二个工具：树（`note_tree`/`note_node_create`/`note_node_rename`/`note_node_move`/`note_node_delete`）、截图缓冲（`note_add_capture`/`note_list_captures`）、笔记（`note_compose`/`note_get`/`note_list`/`note_update`/`note_set_images`）、批注（`note_annotate`/`note_annotate_delete`）、版本（`note_revisions`/`note_rollback`）、导出（`note_export`）、AI（`note_summarize`/`note_chat`/`note_messages`/`note_apply_patch`/`note_ingest_ai_reply`）。
+二十六个工具：树（`note_tree`/`note_node_create`/`note_node_rename`/`note_node_move`/`note_node_delete`）、截图缓冲（`note_add_capture`/`note_list_captures`）、笔记（`note_compose`/`note_get`/`note_list`/`note_update`/`note_set_images`）、批注（`note_annotate`/`note_annotate_delete`）、版本（`note_revisions`/`note_rollback`）、导出（`note_export`）、AI（`note_summarize`/`note_chat`/`note_messages`/`note_apply_patch`/`note_ingest_ai_reply`）、备份与同步（`note_backup`/`note_sync_push`/`note_sync_pull`/`note_sync_status`）。
 
 数据落在 `DRIVER_NOTES_DIR`（默认 `~/PhoNote`）：`phonote.db`（自由文件树 + 图片元数据 + 批注 + 版本 + 消息）+ `media/ab/cd/<sha256>.<ext>`（内容寻址，同一张图只存一份）。
 
-REST 层（`/notes/api/*`，挂载由 `DRIVER_NOTES_UI=1` 控制）给壳用：读操作要 `notes_read`、写操作要 `notes_write` 作用域；上传仍是 JSON base64（不引 `python-multipart`），单图上限 8 MB。AI 相关端点：`GET /notes/{id}/messages`、`POST /notes/{id}/summarize`、`POST /notes/{id}/chat`、`POST /notes/{id}/apply`。
+REST 层（`/notes/api/*`，挂载由 `DRIVER_NOTES_UI=1` 控制）给壳用：读操作要 `notes_read`、写操作要 `notes_write` 作用域；上传仍是 JSON base64（不引 `python-multipart`），单图上限 8 MB。AI 相关端点：`GET /notes/{id}/messages`、`POST /notes/{id}/summarize`、`POST /notes/{id}/chat`、`POST /notes/{id}/apply`；备份与同步：`POST /backup`、`GET /sync/status`、`POST /sync/push`、`POST /sync/pull`。
 
 AI 按 `DRIVER_NOTES_LLM` 四选一：
 
@@ -165,7 +165,32 @@ AI 按 `DRIVER_NOTES_LLM` 四选一：
 | `anthropic` | 打 `/v1/messages` | `DRIVER_NOTES_LLM_API_KEY`，可选 `_MODEL`（默认 `claude-sonnet-4-5`） |
 | `manual` | 不联网：把笔记正文 + 批注 + 图片路径打成上下文包返回，由人粘给网页版模型 | 无 |
 
-模型被要求只回 `{"summary": "...", "edits": [{"find": "...", "replace": "..."}]}`；`find` 必须在正文里**恰好出现一次**才会被套用，否则整条跳过并在返回的 `skipped` 里报出来。`DRIVER_NOTES_LLM_MAX_IMAGES`（默认 6，1–20）控制随请求附几张截图。WebDAV 同步仍在 P3。
+模型被要求只回 `{"summary": "...", "edits": [{"find": "...", "replace": "..."}]}`；`find` 必须在正文里**恰好出现一次**才会被套用，否则整条跳过并在返回的 `skipped` 里报出来。`DRIVER_NOTES_LLM_MAX_IMAGES`（默认 6，1–20）控制随请求附几张截图。
+
+备份与同步（P3）：`note_backup` 把 `phonote.db` + 全部媒体打成一个 zip 放到 `backups/`；WebDAV 同步给多设备用，配置四个环境变量后生效：
+
+| 变量 | 默认 | 语义 |
+| --- | --- | --- |
+| `DRIVER_NOTES_WEBDAV_URL` | 空（=不启用） | WebDAV 根地址，组件会挂在 `<url>/phonote/` 下 |
+| `DRIVER_NOTES_WEBDAV_USER` / `_PASSWORD` | 空 | Basic 认证；两者都空就不带认证 |
+| `DRIVER_NOTES_WEBDAV_KEEP` | `5` | 远端保留几份数据库快照（最少 1） |
+
+```bash
+DRIVER_PLUGINS=pho_note DRIVER_NOTES_DIR="$HOME/PhoNote" \
+DRIVER_NOTES_WEBDAV_URL="https://dav.example.com/notes" \
+DRIVER_NOTES_WEBDAV_USER=me DRIVER_NOTES_WEBDAV_PASSWORD=secret \
+  .venv/Scripts/python -m uvicorn driver_platform.main:app --port 8000
+
+KEY=... # 带 note_sync_* 作用域的钥匙
+curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "X-API-Key: $KEY" \
+     -d '{"tool":"note_sync_push","arguments":{}}'
+```
+
+远端布局：`phonote/manifest.json`（提交点，**最后**才写）、`phonote/db/<UTC 时间戳>-<sha8>.db`（`VACUUM INTO` 快照，按 `KEEP` 轮换）、`phonote/media/ab/cd/<sha256>.webp`（内容寻址，只传远端缺的）。push 时先补目录、只传缺图、传快照，最后写 manifest；pull 时校验快照 sha256、先把本地库备份到 `backups/pre-pull-<时间戳>.db`、再原子替换并补拉缺图。
+
+约定是**单主设备**：不做双向字段级合并，本地有未推送改动时 pull 直接拒绝（判据是内容指纹——`VACUUM` 出来的快照与活动库文件字节不同，所以不能比文件 hash）。
+
+> 打折说明：① `openai`/`anthropic` 两种模式只用 `httpx.MockTransport` 测过，没有对真实模型服务跑过；② 没有重试、限流与流式输出，一次请求最多带 6 张图；③ WebDAV 只在本机用假的 WebDAV 服务（真实 HTTP）验证过 push → 换目录 pull，没有连过真实的坚果云/Nextcloud；Electron 壳也从未实机启动过、`npm install` 未在本机执行。
 
 ### 一条命令起全平台（阶段 7）
 
@@ -233,7 +258,7 @@ src/driver_platform/
   api/plugins.py        GET /v1/plugins、POST /v1/plugins/remote、DELETE /v1/plugins/remote/{plugin_id}
   tools/                Tool 契约、ToolRegistry、executor（HTTP 与 MCP 共用执行路径）、echo 内置工具
   plugins/              Plugin 契约、PluginHost、插件目录、sqlite 插件、remote（远程插件与 HTTP 客户端）、
-                        pho_note（PhoNote 笔记插件：树 / 截图缓冲区 / 组笔记 / 批注 / 版本 / AI / REST）
+                        pho_note（PhoNote 笔记插件：树 / 截图缓冲区 / 组笔记 / 批注 / 版本 / AI / REST / 备份与 WebDAV 同步）
   protocols/            协议适配器：__init__（协议开关 + 路由装配）、openai_schema（纯翻译）、mcp（stdio 服务端）、mcp_server（进程入口）、routes
   observability/        request_id 上下文、四个指标、结构化日志（text/json）、ASGI 中间件、/metrics 路由
 examples/               可运行的远端插件参考实现（remote_echo_service.py，供本机人工验收）

@@ -14,3 +14,4 @@ htmlcov/
 .pip-audit-cache/
 pytest-cache-files-*/
 pytest-of-*/
+.incident-journal-staging/

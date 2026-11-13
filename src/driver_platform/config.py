@@ -1,6 +1,6 @@
 """配置外部化：可配项只从环境变量读，代码里不留第二份真相。
 
-十二个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
+十六个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
 PhoNote 的数据目录（``DRIVER_NOTES_DIR``）与它的 REST 层开关（``DRIVER_NOTES_UI``）、
 开哪些协议适配器（``DRIVER_PROTOCOLS``）、要不要凭证（``DRIVER_AUTH_MODE``）、
 钥匙清单与作用域（``DRIVER_API_KEYS``）、要不要暴露指标（``DRIVER_METRICS_ENABLED``）、
@@ -34,6 +34,7 @@ from driver_platform.observability.logging import (
 )
 from driver_platform.plugins.pho_note.ai import DEFAULT_MAX_IMAGES
 from driver_platform.plugins.pho_note.ai import MODES as AI_MODES
+from driver_platform.plugins.pho_note.sync import DEFAULT_KEEP
 from driver_platform.plugins.remote import DEFAULT_TIMEOUT as DEFAULT_REMOTE_TIMEOUT
 from driver_platform.plugins.remote import normalize_base_url
 from driver_platform.security.keys import ENV_API_KEYS, ApiKey, parse_api_keys
@@ -53,6 +54,10 @@ ENV_NOTES_LLM_BASE_URL = "DRIVER_NOTES_LLM_BASE_URL"
 ENV_NOTES_LLM_API_KEY = "DRIVER_NOTES_LLM_API_KEY"
 ENV_NOTES_LLM_MODEL = "DRIVER_NOTES_LLM_MODEL"
 ENV_NOTES_LLM_MAX_IMAGES = "DRIVER_NOTES_LLM_MAX_IMAGES"
+ENV_NOTES_WEBDAV_URL = "DRIVER_NOTES_WEBDAV_URL"
+ENV_NOTES_WEBDAV_USER = "DRIVER_NOTES_WEBDAV_USER"
+ENV_NOTES_WEBDAV_PASSWORD = "DRIVER_NOTES_WEBDAV_PASSWORD"
+ENV_NOTES_WEBDAV_KEEP = "DRIVER_NOTES_WEBDAV_KEEP"
 ENV_PROTOCOLS = "DRIVER_PROTOCOLS"
 ENV_METRICS_ENABLED = "DRIVER_METRICS_ENABLED"
 ENV_LOG_LEVEL = "DRIVER_LOG_LEVEL"
@@ -80,6 +85,10 @@ class Settings:
     notes_llm_api_key: str = ""
     notes_llm_model: str = ""
     notes_llm_max_images: int = 6
+    notes_webdav_url: str = ""
+    notes_webdav_user: str = ""
+    notes_webdav_password: str = ""
+    notes_webdav_keep: int = DEFAULT_KEEP
     protocols: tuple[str, ...] = ()
     auth_mode: str = AUTH_MODE_OFF
     api_keys: tuple[ApiKey, ...] = ()
@@ -115,6 +124,10 @@ class Settings:
             raise InvalidConfigurationError(
                 f"未知 AI 模式：{self.notes_llm!r}；可用：{', '.join(AI_MODES)}"
             )
+        if self.notes_webdav_keep < 1:
+            raise InvalidConfigurationError(
+                f"{ENV_NOTES_WEBDAV_KEEP} 至少保留 1 份快照，收到：{self.notes_webdav_keep!r}"
+            )
         if not 1 <= self.notes_llm_max_images <= 20:
             raise InvalidConfigurationError(
                 f"{ENV_NOTES_LLM_MAX_IMAGES} 必须在 1..20 之间，收到：{self.notes_llm_max_images!r}"
@@ -139,6 +152,10 @@ class Settings:
             notes_llm_api_key=environ.get(ENV_NOTES_LLM_API_KEY, "").strip(),
             notes_llm_model=environ.get(ENV_NOTES_LLM_MODEL, "").strip(),
             notes_llm_max_images=_parse_max_images(environ.get(ENV_NOTES_LLM_MAX_IMAGES, "")),
+            notes_webdav_url=environ.get(ENV_NOTES_WEBDAV_URL, "").strip(),
+            notes_webdav_user=environ.get(ENV_NOTES_WEBDAV_USER, "").strip(),
+            notes_webdav_password=environ.get(ENV_NOTES_WEBDAV_PASSWORD, ""),
+            notes_webdav_keep=_parse_keep(environ.get(ENV_NOTES_WEBDAV_KEEP, "")),
             protocols=protocols,
             auth_mode=environ.get(ENV_AUTH_MODE, AUTH_MODE_OFF).strip() or AUTH_MODE_OFF,
             api_keys=parse_api_keys(environ.get(ENV_API_KEYS, "")),
@@ -173,6 +190,22 @@ def _parse_bool(name: str, raw: str) -> bool:
 def _split(raw: str) -> tuple[str, ...]:
     """逗号分隔的开关值：去空白、丢空项，保持书写顺序。"""
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_keep(raw: str) -> int:
+    """远端保留几份快照：空取默认，非整数或 <1 直接失败（别悄悄用错值）。"""
+
+    if not raw.strip():
+        return DEFAULT_KEEP
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise InvalidConfigurationError(
+            f"{ENV_NOTES_WEBDAV_KEEP} 必须是整数，收到：{raw!r}"
+        ) from exc
+    if value < 1:
+        raise InvalidConfigurationError(f"{ENV_NOTES_WEBDAV_KEEP} 至少是 1，收到：{value!r}")
+    return value
 
 
 def _parse_max_images(raw: str) -> int:

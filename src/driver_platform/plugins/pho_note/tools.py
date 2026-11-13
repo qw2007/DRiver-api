@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field
 from driver_platform.errors import InvalidArgumentsError
 from driver_platform.plugins.pho_note.ai import NoteAI, apply_edits, parse_reply
 from driver_platform.plugins.pho_note.store import Store
+from driver_platform.plugins.pho_note.sync import SyncConfig
+from driver_platform.plugins.pho_note.sync import pull as sync_pull
+from driver_platform.plugins.pho_note.sync import push as sync_push
+from driver_platform.plugins.pho_note.sync import status as sync_status
 from driver_platform.tools.base import Tool, ToolManifest
 
 #: 单张图的上限（base64 解码前）。壳上传的是长边 1600 的 WebP，正常 100–400 KB。
@@ -132,6 +136,10 @@ class NoteRevisionsInput(BaseModel):
 class NoteRollbackInput(BaseModel):
     note_id: str = Field(min_length=1, description="笔记节点 id")
     revision_id: str = Field(min_length=1, description="要回滚到的版本 id")
+
+
+class EmptyInput(BaseModel):
+    """没有参数的操作用它占位（备份/同步）。"""
 
 
 class NoteExportInput(BaseModel):
@@ -247,8 +255,10 @@ def _apply(reply: str, note: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_tools(store: Store, ai: NoteAI) -> list[Tool[Any, Any]]:
+def build_tools(store: Store, ai: NoteAI, sync: SyncConfig | None = None) -> list[Tool[Any, Any]]:
     """按固定顺序返回工具表（顺序决定 Agent 看到的面板顺序）。"""
+
+    config = sync or SyncConfig()
 
     def tool(
         name: str,
@@ -405,6 +415,31 @@ def build_tools(store: Store, ai: NoteAI) -> list[Tool[Any, Any]]:
             "把从网页版模型粘回来的 JSON 回复解析并套用到正文",
             NoteIngestReplyInput,
             lambda a: _ingest(store, a),
+        ),
+        # 备份与同步（P3）
+        tool(
+            "note_backup",
+            "把库快照和全部图片打成一个 zip 放进 backups/（换机器或离线恢复用）",
+            EmptyInput,
+            lambda a: store.backup_zip(),
+        ),
+        tool(
+            "note_sync_push",
+            "把图片缺口、库快照推给 WebDAV（单主设备：最后写 manifest 算提交）",
+            EmptyInput,
+            lambda a: sync_push(store, config),
+        ),
+        tool(
+            "note_sync_pull",
+            "用远端快照覆盖本地并补齐缺图（本地有未推送改动时拒绝）",
+            EmptyInput,
+            lambda a: sync_pull(store, config),
+        ),
+        tool(
+            "note_sync_status",
+            "看同步状态：远端是否配置、上次推/拉时间、本地有没有未推送改动",
+            EmptyInput,
+            lambda a: sync_status(store, config),
         ),
     ]
 

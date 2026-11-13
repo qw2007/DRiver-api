@@ -209,6 +209,20 @@ class AiReplyUnparsableError(PlatformError):
     status_code = 422
 
 
+class SyncNotConfiguredError(PlatformError):
+    """WebDAV 目标没配（``DRIVER_NOTES_WEBDAV_URL`` 为空）。"""
+
+    code = "sync_not_configured"
+    status_code = 400
+
+
+class SyncFailedError(PlatformError):
+    """同步失败：连不上、校验不过、或本地有未推送的改动。"""
+
+    code = "sync_failed"
+    status_code = 502
+
+
 class RemotePluginDisabledError(PlatformError):
     """远程插件管理接口没打开（``DRIVER_REMOTE_PLUGIN_ENABLED`` 默认关）。
 

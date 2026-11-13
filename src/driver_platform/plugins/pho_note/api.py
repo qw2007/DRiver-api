@@ -26,6 +26,10 @@ from driver_platform.errors import (
 from driver_platform.plugins.pho_note.ai import NoteAI
 from driver_platform.plugins.pho_note.plugin import PhoNotePlugin
 from driver_platform.plugins.pho_note.store import Store
+from driver_platform.plugins.pho_note.sync import SyncConfig
+from driver_platform.plugins.pho_note.sync import pull as sync_pull
+from driver_platform.plugins.pho_note.sync import push as sync_push
+from driver_platform.plugins.pho_note.sync import status as sync_status
 from driver_platform.plugins.pho_note.tools import run_chat, run_patch, run_summarize
 from driver_platform.security.http import PrincipalDep
 from driver_platform.security.keys import Principal
@@ -79,6 +83,13 @@ def write_guard(principal: PrincipalDep) -> None:
 
 StoreDep = Annotated[Store, Depends(_store)]
 AiDep = Annotated[NoteAI, Depends(_ai)]
+
+
+def _sync_config(request: Request) -> SyncConfig:
+    return _plugin(request).sync
+
+
+SyncDep = Annotated[SyncConfig, Depends(_sync_config)]
 Read = Depends(read_guard)
 Write = Depends(write_guard)
 
@@ -324,5 +335,23 @@ def build_router() -> APIRouter:
             media_type=capture["media_type"],
             headers={"Cache-Control": "private, max-age=31536000, immutable"},
         )
+
+    # 备份与同步（P3）
+
+    @router.post("/backup", dependencies=[Write])
+    def backup(store: StoreDep) -> dict[str, Any]:
+        return store.backup_zip()
+
+    @router.get("/sync/status", dependencies=[Read])
+    def sync_state(store: StoreDep, config: SyncDep) -> dict[str, Any]:
+        return sync_status(store, config)
+
+    @router.post("/sync/push", dependencies=[Write])
+    def sync_upload(store: StoreDep, config: SyncDep) -> dict[str, Any]:
+        return sync_push(store, config)
+
+    @router.post("/sync/pull", dependencies=[Write])
+    def sync_download(store: StoreDep, config: SyncDep) -> dict[str, Any]:
+        return sync_pull(store, config)
 
     return router
