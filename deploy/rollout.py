@@ -208,14 +208,21 @@ def main(argv: list[str] | None = None) -> int:
     for thread in threads:
         thread.join()
 
-    summary = {"total": 0, "ok": 0, "failed": 0, "statuses": {}, "errors": {}}
+    # summary() 返回 dict[str, object]（它还要带 duration_ms 这种嵌套结构）；
+    # 这里只累加四个标量字段，用显式类型 + int() 收窄，别让 object 传染整段代码。
+    total = 0
+    ok = 0
+    failed = 0
+    statuses: dict[str, int] = {}
+    errors: dict[str, int] = {}
     for report in reports:
         part = report.summary()
-        summary["total"] += part["total"]
-        summary["ok"] += part["ok"]
-        summary["failed"] += part["failed"]
-        summary["statuses"].update(part["statuses"])
-        summary["errors"].update(part["errors"])
+        total += part["total"]
+        ok += part["ok"]
+        failed += part["failed"]
+        statuses.update(part["statuses"])
+        errors.update(part["errors"])
+    summary = {"total": total, "ok": ok, "failed": failed, "statuses": statuses, "errors": errors}
 
     after = {container: image_id(container) for container in container_ids()}
     changed = sorted(set(before.values())) != sorted(set(after.values()))

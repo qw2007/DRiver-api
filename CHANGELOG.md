@@ -25,6 +25,7 @@
 | — PhoNote 插件 P2 | 见文末 | 2026-11-10 | 见文末 | AI 总结、讨论与增量补丁（`find` 唯一匹配才套用）；manual 模式不需要 key |
 | — PhoNote 插件 P3 | 见文末 | 2026-11-13 | 见文末 | 备份 zip + WebDAV 同步：真实 HTTP 上 push → 换目录 pull，笔记与图片完整还原 |
 | — 收口四项决策 | 见文末 | 2026-11-13 | 见文末 | CI 覆盖率硬门禁 + 安全扫描；笔记模板；Agent 只读窄钥匙 |
+| — 收口八项：能力补齐 | 见文末 | 2026-11-13 | 见文末 | PostgreSQL 插件；包版本 0.1.0；远程插件重试与清单缓存；`/metrics` 可选鉴权；容器非 root + 只读根文件系统；截图默认压 WebP |
 
 ---
 
@@ -354,12 +355,46 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 **已知限制**：模板只有一份内置的（没有用户自定义模板的存储与界面）；`keep_original`（按次保留原图）在这次只写了结论、仍未实现；CI 的 `pip-audit` 依赖 PyPI 可达，离线环境会红。
 
 ---
+## 非阶段交付：收口八项——能力补齐（2026-11-13）
+
+**目标**：把 [`docs/handoff.md`](docs/handoff.md) 3.2 的九条留白按「哪条真会挡住下一步」排序后一次做掉，同时把「已定未做」的原图保留开关补上。
+
+**交付物**：
+- **A2 PostgreSQL 插件**（`src/driver_platform/plugins/postgres.py`）：`search_postgres`，入参输出复用 `SearchDatabaseInput`/`SearchDatabaseOutput`——Agent 看到的形状与 `search_database` 完全一致，只是后端换成 PostgreSQL 只读会话（`options=-c default_transaction_read_only=on`、`connect_timeout=5`）；表与列的元数据查 `information_schema`，动态 SQL 走 `%s` 占位符 + 双引号标识符；`psycopg` 是可选依赖（`pip install 'driver-platform[postgres]'`），没装时插件装载直接失败且给出安装提示；新增 `DRIVER_POSTGRES_DSN`。
+- **A4 版本与依赖**：包版本 `0.0.0` → **`0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同一处真话，compose 镜像标签跟着走，测试守三点一致）；新增可选依赖组 `postgres` 与 `images`（Pillow）。
+- **A5 远程插件健壮性**：清单缓存 60 秒（`MANIFEST_CACHE_SECONDS`）、连接失败重试一次（`RETRY_ATTEMPTS=2`/`RETRY_DELAY=0.2`），但**只对「请求根本没到远端」的 `ConnectError`/`ConnectTimeout`/`PoolTimeout` 重试**——读超时与 5xx 不重试，否则写操作会执行两遍。
+- **A6 `/metrics` 可选鉴权**：`DRIVER_METRICS_PROTECTED=1` 时 `/metrics` 走与 `/v1/tools` 同一套凭证（无钥匙 401、有效钥匙 200）；默认仍公开（抓它的是集群内 Prometheus）。
+- **A7 部署加固**：镜像里新建 `uid=10001(driver)` 并 `USER driver`、`chmod -R a-w /app`、`VOLUME ["/data"]`（只读根文件系统下 `/data` 必须是卷，否则种子脚本报 `Read-only file system`）；compose 加 `read_only: true`、`tmpfs: /tmp`、`no-new-privileges:true`、`mem_limit: 512m`、`cpus: "1.0"`；新增 `.env.example`，`.env` 进 `.gitignore`。
+- **A3 类型检查扩围**：`mypy` 的 `files` 从 `["src"]` 扩到 `["src", "deploy", "examples"]`（不扩 `tests/`：mock 噪音大于收益），修掉 6 个真实类型问题（含 `traffic_probe.py` 用 `TypedDict` 描述汇总、`entrypoint.py` 的 `execvp` 之后不可达分支）。
+- **B 截图默认归一化**：PhoNote 的截图默认压成 WebP（长边 1600、质量 82），`keep_original=true` 按次保留原图；Pillow 是可选的（没装就原样存，不报错）。
+- 文档：README 补 PostgreSQL 用法、`/metrics` 鉴权、截图压缩、版本与发布口径与新的已知限制。
+
+**关键决策与理由**：
+- **PostgreSQL 复用 SQLite 的入参模型而不是新造一套**：工具契约的重点是「Agent 学一次就够」，两套形状会让模型每次都要判断后端；差异只留在插件内部（只读会话、`%s` 占位符）。
+- **连接超时必须显式设**：实测不设 `connect_timeout` 时，DSN 指向一个不响应的端口会让 `psycopg.connect` 一直挂着，把平台启动拖死——插件装载失败要好过启动卡住。
+- **远程插件只对「连接层失败」重试**：幂等不是靠重试次数保证的，而是靠「请求有没有可能已经到达」判断；读超时重试等于给写操作加了一次执行机会。
+- **镜像默认非 root + 只读根文件系统**：这是阶段 7「最接近生产的两条限制」之一；代价就是必须显式声明 `/data` 卷（否则连演示库都种不出来），这个代价换掉的是「容器被攻破后还能改自己的文件系统」。
+- **`/metrics` 鉴权做成可选开关而不是默认开**：默认开会让现有的 compose/Prometheus 抓取全部 401，属于破坏性变更；开关默认关、文档写清「暴露到不可信网络就开」。
+- **版本号升到 0.1.0 但不推镜像仓库**：发布物是 tag + Release + 可复现的 `docker compose build`；推镜像仓库会引入一套凭据与清理策略，当前收益不足。
+
+**验收证据**（本机全量）：
+- `ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **77 files already formatted**；`mypy` → Success: no issues found in **47 source files**；`pytest --cov --cov-fail-under=90` → exit 0，**375 passed / 0 failed**，覆盖率 **94.75%**（2668 语句 / 140 未覆盖）。
+- PostgreSQL 真实集成：`docker run ... postgres:16-alpine`（端口 55432 → 5432）+ `DRIVER_TEST_POSTGRES_DSN=postgresql://demo:secret@127.0.0.1:55432/shop` 跑通 `search_postgres` 的过滤、分页与未知表/未知列报错；没设该环境变量时相关用例 `pytest.skip`。
+- 容器加固实测：`docker run --read-only --tmpfs /tmp --security-opt no-new-privileges:true --memory 512m --cpus 1 driver-platform:0.1.0` → `Up (healthy)`；`id` → `uid=10001(driver)`；`/data/demo.db` 属主 `driver`；`open('/app/evil.txt','w')` → `OSError: [Errno 30] Read-only file system`；`search_database` 经 HTTP 返回上海两行；`DRIVER_METRICS_PROTECTED=1` 时 `/metrics` 无钥匙 401、带钥匙 200。
+- 远程插件：MockTransport 下清单缓存命中（两次 `fetch_manifest()` 只 1 次请求）、连接失败重试 1 次、`ReadTimeout` 不重试。
+- 截图归一化：Pillow 13.0.0 下默认落盘 `image/webp` 且以 `RIFF`+`WEBP` 开头，`keep_original=true` 时字节等于原 PNG。
+- Electron 壳真启：`npm install`（经 `ELECTRON_MIRROR` 镜像，npm 11 的 allow-scripts 默认拦住 postinstall，需手动 `node node_modules/electron/install.js`）→ `electron.exe .` 启动，窗口标题 `PhoNote`、四分区渲染正常、`/notes/api/tree` 返回空树、无 stdout/stderr 报错。
+
+**已知限制**：PostgreSQL 插件无事务/连接池/SSL 参数可调，`connect_timeout` 固定 5 秒；`/metrics` 默认仍公开；Pillow 缺失时图片原样落盘；Electron 的全局热键（`Ctrl+Shift+S`）在本次真启中未实际按键验证（只验证了窗口渲染与 REST 通路）；未加 3.11/3.12 的 CI 矩阵。
+
+---
+
 ## 当前状态（截至最新提交）
 
-- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 4 个非阶段交付（PhoNote 插件 P0/P1/P2/P3，见上一节；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **75 files** already formatted；`mypy` → Success: no issues found in **41 source files**；`pytest` → **357 passed**，覆盖率 **94%**（2506 语句 / 138 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
-- **包版本**：`pyproject.toml` 仍是 `0.0.0`，尚未随阶段递增（对外契约版本走各工具的 `contract_version`，与包版本解耦）；
-- **下一步**：九阶段目标已收口，第 3.3 节的四个待拍板项已于 2026-11-13 全部拍板（见上一节）。剩下的是 [`docs/handoff.md`](docs/handoff.md) 3.2 的九条范围留白与阶段 8 已知限制里最接近生产的两条：镜像瘦身/非 root 运行、`/metrics` 收进内网。
+- **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 5 个非阶段交付（PhoNote 插件 P0/P1/P2/P3 + 收口四项决策 + 收口八项能力补齐，见上文；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **77 files** already formatted；`mypy` → Success: no issues found in **47 source files**（已覆盖 `src` + `deploy` + `examples`）；`pytest --cov --cov-fail-under=90` → **375 passed**，覆盖率 **94.75%**（2668 语句 / 140 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
+- **包版本**：**`0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随；对外契约版本仍走各工具的 `contract_version`，与包版本解耦）；发布物是 git tag `v0.1.0` + GitHub Release，不推镜像仓库；
+- **下一步**：九阶段目标已收口，`docs/handoff.md` 3.2/3.3 的留白与待拍板项已按 2026-11-13 的结论改写。还开着的都是「要么需要外部资源、要么收益不足」的项：3.11/3.12 的 CI 矩阵、真编排层（K8s）、镜像瘦身（当前 241 MB）、推镜像仓库、跨进程 traceparent。
 
 ## 已知限制（汇总）
 
@@ -369,8 +404,9 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 4. MCP 侧只做 stdio 与 tools，协议版本跟随 SDK，详见阶段 3 说明；
 5. 鉴权默认关且只到工具名粒度，无速率限制/配额/审计/吊销，详见阶段 4 说明；
 6. 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零），`request_id` 只在本进程内贯穿（无 traceparent），访问日志不记请求体，详见阶段 5 说明；
-7. 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，`base_url` 是单点且每次调用新建 HTTP 客户端，详见阶段 6 说明；
-8. 部署的默认形态是**单副本**（重启期间不可用），容器以 root 运行、无资源限额与只读根文件系统，第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文，`/metrics` 无鉴权且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
+7. 远程插件默认关、清单缓存 60 秒且只在装载/重连时拉、连接失败重试一次（读超时与 5xx 不重试）、无熔断/签名校验，`base_url` 是单点且每次调用新建 HTTP 客户端，详见阶段 6 说明；
+8. 部署的默认形态是**单副本**（重启期间不可用）；容器已改成非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU 限额，但镜像仍 241 MB、第三方镜像钉的是 amd64 摘要而基础镜像用标签，compose 里的演示钥匙是明文默认值（对外部署必须用 `.env` 覆盖），`/metrics` 默认无鉴权（可开 `DRIVER_METRICS_PROTECTED=1`）且暴露在宿主端口，Grafana 自带插件不自更新（升级只能改镜像摘要），详见阶段 7 说明；
 9. 多副本是**单机 Compose 的 `--scale`**、不是编排（不自动补副本、无滚动策略、跨宿主无从谈起），nginx 解析有 5 秒窗口，重试对非幂等请求也开着，多副本共享同一份只读数据卷，探针只衡量成功率，`/metrics` 经网关暴露且仍无鉴权，远程插件的 HTTP 客户端会继承宿主机代理设置，详见阶段 8 说明；
 10. **本机开发环境的沙箱限制（不影响 CI）**：受限模式下 `pip` 安装、全量 pytest、`docker` 命令都必须提权 —— pytest 用 `Path.mkdir(mode=0o700)` 建临时目录，该目录的 DACL 里 `BUILTIN\Administrators` 对受限令牌是 deny-only，于是**创建者自己都进不去**（`PermissionError [WinError 5]`，本机 30 个用例受影响）；Docker CLI 要开命名管道，受限进程不被允许；本机 DSH 会话里 **Python 子进程**连 `danger-full-access` 都解不开（写不了工作区外、打不开 Docker 命名管道），所以本机滚动验收用等价 PowerShell 序列替代 `deploy/rollout.py`（见阶段 8 说明的验收证据第 5 节）。逐条解法（含 GitHub 直连、镜像加速、提权清单、`0o700` 取证）见 [`docs/environment.md`](docs/environment.md)。
-11. **PhoNote 插件（P0/P1/P2/P3）**：单机单用户（SQLite + 本地文件）；同步是单主设备、不做双向合并，只实现 `MKCOL`/`PUT`/`GET`/`DELETE` 四个动词、没有断点续传，远端只增不删媒体，真实云盘（坚果云/Nextcloud）未连过；批注锚点里的选中文字/图片区域坐标仍是占位 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 只有 openai/anthropic/manual 三档、无重试与流式、每次最多 6 张图；多屏只截第一屏；壳的 `npm install` 与 Electron 启动都未在本机验证。
+11. **PhoNote 插件（P0/P1/P2/P3）**：单机单用户（SQLite + 本地文件）；同步是单主设备、不做双向合并，只实现 `MKCOL`/`PUT`/`GET`/`DELETE` 四个动词、没有断点续传，远端只增不删媒体，真实云盘（坚果云/Nextcloud）未连过；批注锚点里的选中文字/图片区域坐标仍是占位 JSON；图片只能按 sha256 从磁盘读、无缩略图；导出是「复制 Markdown + 绝对路径」，不是打包下载；删除不级联删图（图留在缓冲区）；AI 只有 openai/anthropic/manual 三档、无重试与流式、每次最多 6 张图；多屏只截第一屏；截图压缩依赖 Pillow（缺省时装不上就原样存，体积不受控）。壳已在本机真启验证（窗口与四分区渲染正常、REST 通路可用），但全局热键 `Ctrl+Shift+S` 未实际按键验证；`npm install` 需 `ELECTRON_MIRROR` 镜像，且 npm 11 默认拦 postinstall，要手动跑 `node node_modules/electron/install.js`。
+12. **PostgreSQL 插件**：只做只读等值查询（无事务控制、连接池、可调 SSL 参数），`connect_timeout` 固定 5 秒；库与列元数据走 `information_schema`（只认默认 schema），跨 schema 查询未支持。

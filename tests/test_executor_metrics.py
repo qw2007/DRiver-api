@@ -286,3 +286,27 @@ def test_non_http_scopes_are_passed_through(metrics_app: FastAPI):
     """lifespan / websocket 原样放行：给它们发号或记账都是错的。"""
     with TestClient(metrics_app):
         pass
+
+
+def test_metrics_can_require_the_same_credentials_as_the_tools() -> None:
+    """``DRIVER_METRICS_PROTECTED=1``：抓取也要带钥匙——把 /metrics 暴露到内网之外时才需要。"""
+    settings = Settings(
+        metrics_enabled=True,
+        metrics_protected=True,
+        auth_mode="required",
+        api_keys=parse_api_keys("key-1"),
+    )
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/metrics").status_code == 401
+        authorized = client.get("/metrics", headers={"X-API-Key": "key-1"})
+        assert authorized.status_code == 200
+        assert "driver_http_requests_total" in authorized.text
+
+
+def test_metrics_stay_open_by_default() -> None:
+    """.env 里没写 DRIVER_METRICS_PROTECTED 时行为不变：内网抓取不需要钥匙。"""
+    settings = Settings(
+        metrics_enabled=True, auth_mode="required", api_keys=parse_api_keys("key-1")
+    )
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/metrics").status_code == 200

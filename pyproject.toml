@@ -1,6 +1,6 @@
 [project]
 name = "driver-platform"
-version = "0.0.0"
+version = "0.1.0"
 description = "AI Agent 与数据库等工具之间的中间层驱动平台"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,14 @@ dependencies = [
 [project.optional-dependencies]
 # MCP 适配器可选：核心服务（HTTP / 工具 / 插件）不需要它，不装也能跑，
 # 装了就多一个 stdio MCP 入口（python -m driver_platform.protocols.mcp_server）。
+images = [
+    # 截图入库时压成 WebP 并限制长边（没装就原样存，功能不因此失效）。
+    "pillow>=10",
+]
+postgres = [
+    # PostgreSQL 插件可选：核心服务不需要它，装了就多一个 search_postgres 工具。
+    "psycopg[binary]>=3.2",
+]
 mcp = [
     "mcp>=1.20,<2",
 ]
@@ -29,6 +37,8 @@ dev = [
     "pip-audit>=2.7",  # 依赖漏洞审计（阶段 8 供应链加固）
     "PyYAML>=6",  # 阶段 7：测试要解析 docker-compose.yml 与 Grafana provisioning
     "mcp>=1.20,<2",  # 测试用官方客户端做协议一致性验证
+    "psycopg[binary]>=3.2",  # 测试用：PostgreSQL 插件的真实驱动
+    "pillow>=10",  # 测试用：截图归一化（WebP + 长边限制）
 ]
 
 [build-system]
@@ -48,7 +58,7 @@ src = ["src", "tests", "deploy"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src"]
+files = ["src", "deploy", "examples"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
@@ -57,3 +67,4 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_unreachable = true
 strict_equality = true
+

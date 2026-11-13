@@ -70,7 +70,7 @@ def test_capture_then_compose_then_read(registry: Any) -> None:
         "note_add_capture",
         {"image_b64": PNG_B64, "app_title": "网课", "width": 1, "height": 1},
     )
-    assert capture["media_type"] == "image/png"
+    assert capture["media_type"] == "image/webp"  # 默认归一化（见 store.ImageMaxEdge）
 
     buffered = _run(registry, "note_list_captures", {"limit": 10})
     assert [item["capture_id"] for item in buffered] == [capture["capture_id"]]

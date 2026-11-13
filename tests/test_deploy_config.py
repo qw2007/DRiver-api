@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 import yaml
 
+import driver_platform as package_module
 import driver_platform.config as config_module
 import driver_platform.security.keys as keys_module
 from driver_platform.security.keys import parse_api_keys
@@ -91,11 +92,35 @@ def test_every_compose_env_name_is_read_by_the_platform() -> None:
 def test_platform_service_is_built_and_third_party_images_are_pinned() -> None:
     platform = _service("driver-platform")
     assert platform["build"] == {"context": "."}
-    assert platform["image"] == "driver-platform:0.0.0"
+    # 标签跟着包版本走：改版本号不该逼着改测试。
+    assert platform["image"] == f"driver-platform:{package_module.__version__}"
 
     for name in ("prometheus", "grafana"):
         image = _service(name)["image"]
         assert DIGEST_PATTERN.match(image), f"{name} 必须钉摘要，实际：{image}"
+
+
+def test_platform_service_runs_hardened() -> None:
+    """阶段 8 加固：非 root、根文件系统只读、/tmp 内存盘、资源限额、不升权。"""
+    platform = _service("driver-platform")
+    assert platform["read_only"] is True
+    assert "/tmp" in platform["tmpfs"]
+    assert "no-new-privileges:true" in platform["security_opt"]
+    assert platform["mem_limit"] == "512m"
+    assert platform["cpus"] == "1.0"
+
+    dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "USER driver" in dockerfile
+    assert "useradd --create-home --uid 10001" in dockerfile
+    assert "chmod -R a-w /app" in dockerfile
+
+
+def test_demo_credentials_are_meant_to_be_overridden() -> None:
+    """.env.example 必须存在且给出覆盖项；.env 本身要被 gitignore 掉。"""
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "DRIVER_API_KEYS=" in example
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert any(line.strip() == ".env" for line in gitignore.splitlines())
 
 
 def test_platform_service_enables_observability_and_database_plugin() -> None:

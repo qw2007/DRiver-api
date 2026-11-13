@@ -19,6 +19,7 @@ from driver_platform.plugins.base import Plugin
 from driver_platform.plugins.pho_note import PhoNotePlugin
 from driver_platform.plugins.pho_note.ai import AIConfig
 from driver_platform.plugins.pho_note.sync import SyncConfig
+from driver_platform.plugins.postgres import PostgresPlugin
 from driver_platform.plugins.sqlite import SqlitePlugin
 
 if TYPE_CHECKING:  # 只在类型检查期 import：config 会反过来 import 远程插件（见下）
@@ -53,8 +54,17 @@ def _build_pho_note(settings: Settings) -> Plugin:
     )
 
 
+def _build_postgres(settings: Settings) -> Plugin:
+    if not settings.postgres_dsn:
+        raise InvalidConfigurationError(
+            "启用 postgres 插件必须设置 DRIVER_POSTGRES_DSN（平台不替调用方猜库在哪里）"
+        )
+    return PostgresPlugin(settings.postgres_dsn)
+
+
 PLUGIN_FACTORIES: dict[str, Callable[[Settings], Plugin]] = {
     "sqlite": _build_sqlite,
+    "postgres": _build_postgres,
     "pho_note": _build_pho_note,
 }
 

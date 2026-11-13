@@ -27,6 +27,7 @@ import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 DEFAULT_TARGET = "http://127.0.0.1:8000/health"
 DEFAULT_EXECUTE_URL = "http://127.0.0.1:8000/v1/tools/execute"
@@ -73,6 +74,17 @@ def request_once(
     return Attempt(ok=status == expect, status=status, detail=detail, duration_ms=elapsed)
 
 
+class ProbeSummary(TypedDict):
+    """探针汇总。用 TypedDict 而不是 dict[str, object]：调用方要能直接累加数字。"""
+
+    total: int
+    ok: int
+    failed: int
+    statuses: dict[str, int]
+    errors: dict[str, int]
+    duration_ms: dict[str, float | None]
+
+
 @dataclass
 class ProbeReport:
     """累计结果。线程之间用它汇总，所以每次写入都要拿锁。"""
@@ -93,7 +105,7 @@ class ProbeReport:
     def failed(self) -> int:
         return sum(1 for attempt in self.attempts if not attempt.ok)
 
-    def summary(self) -> dict[str, object]:
+    def summary(self) -> ProbeSummary:
         durations = sorted(attempt.duration_ms for attempt in self.attempts)
         statuses = Counter(
             "connection_error" if attempt.status is None else str(attempt.status)

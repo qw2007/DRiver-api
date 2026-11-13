@@ -78,7 +78,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(build_protocols_router())
     if resolved.metrics_enabled:
         # 端点也由能力自己带进来，挂不挂由开关决定——关掉时 /metrics 根本不存在（404）。
-        app.include_router(build_metrics_router())
+        # protected=True 时与 /v1/tools 共用同一套凭证（要暴露到不可信网络时才需要）。
+        app.include_router(build_metrics_router(protected=resolved.metrics_protected))
     if resolved.notes_ui and "pho_note" in resolved.plugins:
         # 桌面壳走 REST（图片按字节取，不套 base64 工具信封）；开关默认关。
         from driver_platform.plugins.pho_note.api import build_router as build_notes_router

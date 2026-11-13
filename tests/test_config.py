@@ -8,11 +8,13 @@ from driver_platform.config import (
     ENV_LOG_FORMAT,
     ENV_LOG_LEVEL,
     ENV_METRICS_ENABLED,
+    ENV_METRICS_PROTECTED,
     ENV_NOTES_WEBDAV_KEEP,
     ENV_NOTES_WEBDAV_PASSWORD,
     ENV_NOTES_WEBDAV_URL,
     ENV_NOTES_WEBDAV_USER,
     ENV_PLUGINS,
+    ENV_POSTGRES_DSN,
     ENV_PROTOCOLS,
     ENV_REMOTE_PLUGIN_ENABLED,
     ENV_REMOTE_PLUGINS,
@@ -253,3 +255,16 @@ def test_webdav_keep_must_be_a_positive_integer(raw: str) -> None:
 def test_webdav_keep_is_validated_on_direct_construction() -> None:
     with pytest.raises(InvalidConfigurationError):
         Settings(notes_webdav_keep=0)
+
+
+def test_postgres_dsn_is_optional_and_trimmed() -> None:
+    assert Settings().postgres_dsn == ""
+    parsed = Settings.from_env({ENV_POSTGRES_DSN: "  postgresql://demo@db/shop  "})
+    assert parsed.postgres_dsn == "postgresql://demo@db/shop"
+
+
+def test_metrics_are_open_unless_explicitly_protected() -> None:
+    assert Settings().metrics_protected is False
+    assert Settings.from_env({ENV_METRICS_PROTECTED: "1"}).metrics_protected is True
+    with pytest.raises(InvalidConfigurationError):
+        Settings.from_env({ENV_METRICS_PROTECTED: "maybe"})

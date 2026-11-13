@@ -36,8 +36,10 @@ def main(argv: list[str]) -> int:
             [sys.executable, SEED_SCRIPT, "--path", db_path],
             check=True,
         )
+    # execvp 成功即替换进程、永不返回；用 NoReturn 告诉类型检查器，下面那行才是「无命令」的返回。
     os.execvp(argv[1], argv[1:])
-    return 0  # 不会走到：execvp 成功即替换进程
+    # 真实运行时 execvp 不返回；测试会替换它，所以这一行必须存在（mypy 认得 NoReturn）。
+    return 0  # type: ignore[unreachable]  # pragma: no cover
 
 
 if __name__ == "__main__":

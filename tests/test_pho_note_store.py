@@ -96,12 +96,26 @@ def test_folder_cannot_carry_body(store: Store) -> None:
         store.create_node(parent_id=None, kind="folder", name="   ")
 
 
-def test_add_capture_writes_the_file_and_returns_metadata(store: Store) -> None:
+def test_add_capture_normalizes_to_webp_by_default(store: Store) -> None:
+    """默认把图压成 WebP 并限制长边：截图这条主线不能因为体积把盘塞满。"""
     capture = store.add_capture(PNG, source="shell", app_title="网课 · 第 1 讲", width=1, height=1)
+
+    assert capture["media_type"] == "image/webp"
+    assert capture["bytes"] == capture["bytes"]  # 记录的是**落盘后**的字节数
+    assert capture["width"] == 1 and capture["height"] == 1
+    written = store.root / "media" / capture["sha256"][:2] / capture["sha256"][2:4]
+    stored = (written / f"{capture['sha256']}.webp").read_bytes()
+    assert stored.startswith(b"RIFF") and stored[8:12] == b"WEBP"
+
+
+def test_keep_original_stores_the_uploaded_bytes(store: Store) -> None:
+    """``keep_original=True`` 时原封不动落盘——这一张图要留证据/要清晰度。"""
+    capture = store.add_capture(
+        PNG, source="shell", app_title=None, width=1, height=1, keep_original=True
+    )
 
     assert capture["media_type"] == "image/png"
     assert capture["bytes"] == len(PNG)
-    assert capture["width"] == 1 and capture["height"] == 1
     written = store.root / "media" / capture["sha256"][:2] / capture["sha256"][2:4]
     assert (written / f"{capture['sha256']}.png").read_bytes() == PNG
 

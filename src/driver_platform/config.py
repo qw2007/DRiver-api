@@ -1,6 +1,6 @@
 """配置外部化：可配项只从环境变量读，代码里不留第二份真相。
 
-十六个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
+十八个开关：装哪些插件（``DRIVER_PLUGINS``）、SQLite 库在哪（``DRIVER_SQLITE_PATH``）、
 PhoNote 的数据目录（``DRIVER_NOTES_DIR``）与它的 REST 层开关（``DRIVER_NOTES_UI``）、
 开哪些协议适配器（``DRIVER_PROTOCOLS``）、要不要凭证（``DRIVER_AUTH_MODE``）、
 钥匙清单与作用域（``DRIVER_API_KEYS``）、要不要暴露指标（``DRIVER_METRICS_ENABLED``）、
@@ -47,6 +47,7 @@ from driver_platform.security.policy import (
 
 ENV_PLUGINS = "DRIVER_PLUGINS"
 ENV_SQLITE_PATH = "DRIVER_SQLITE_PATH"
+ENV_POSTGRES_DSN = "DRIVER_POSTGRES_DSN"
 ENV_NOTES_DIR = "DRIVER_NOTES_DIR"
 ENV_NOTES_UI = "DRIVER_NOTES_UI"
 ENV_NOTES_LLM = "DRIVER_NOTES_LLM"
@@ -61,6 +62,7 @@ ENV_NOTES_WEBDAV_PASSWORD = "DRIVER_NOTES_WEBDAV_PASSWORD"  # nosec B105
 ENV_NOTES_WEBDAV_KEEP = "DRIVER_NOTES_WEBDAV_KEEP"
 ENV_PROTOCOLS = "DRIVER_PROTOCOLS"
 ENV_METRICS_ENABLED = "DRIVER_METRICS_ENABLED"
+ENV_METRICS_PROTECTED = "DRIVER_METRICS_PROTECTED"
 ENV_LOG_LEVEL = "DRIVER_LOG_LEVEL"
 ENV_LOG_FORMAT = "DRIVER_LOG_FORMAT"
 ENV_REMOTE_PLUGINS = "DRIVER_REMOTE_PLUGINS"
@@ -79,6 +81,7 @@ _FALSY = frozenset({"", "0", "false", "no", "off"})
 class Settings:
     plugins: tuple[str, ...] = ()
     sqlite_path: str | None = None
+    postgres_dsn: str = ""
     notes_dir: str = ""
     notes_ui: bool = False
     notes_llm: str = "off"
@@ -94,6 +97,7 @@ class Settings:
     auth_mode: str = AUTH_MODE_OFF
     api_keys: tuple[ApiKey, ...] = ()
     metrics_enabled: bool = False
+    metrics_protected: bool = False
     log_level: str = DEFAULT_LOG_LEVEL
     log_format: str = LOG_FORMAT_TEXT
     remote_plugins: tuple[tuple[str, str], ...] = ()
@@ -146,6 +150,7 @@ class Settings:
         return cls(
             plugins=_split(environ.get(ENV_PLUGINS, "")),
             sqlite_path=environ.get(ENV_SQLITE_PATH) or None,
+            postgres_dsn=environ.get(ENV_POSTGRES_DSN, "").strip(),
             notes_dir=environ.get(ENV_NOTES_DIR, "").strip(),
             notes_ui=_parse_bool(ENV_NOTES_UI, environ.get(ENV_NOTES_UI, "")),
             notes_llm=(environ.get(ENV_NOTES_LLM, "").strip().lower() or "off"),
@@ -161,6 +166,9 @@ class Settings:
             auth_mode=environ.get(ENV_AUTH_MODE, AUTH_MODE_OFF).strip() or AUTH_MODE_OFF,
             api_keys=parse_api_keys(environ.get(ENV_API_KEYS, "")),
             metrics_enabled=_parse_bool(ENV_METRICS_ENABLED, environ.get(ENV_METRICS_ENABLED, "")),
+            metrics_protected=_parse_bool(
+                ENV_METRICS_PROTECTED, environ.get(ENV_METRICS_PROTECTED, "")
+            ),
             log_level=environ.get(ENV_LOG_LEVEL, "").strip() or DEFAULT_LOG_LEVEL,
             log_format=environ.get(ENV_LOG_FORMAT, "").strip().lower() or LOG_FORMAT_TEXT,
             remote_plugins=_parse_remote_plugins(environ.get(ENV_REMOTE_PLUGINS, "")),

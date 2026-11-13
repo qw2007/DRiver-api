@@ -71,6 +71,10 @@ class NoteAddCaptureInput(BaseModel):
     app_title: str | None = Field(default=None, max_length=200, description="截图时前台窗口标题")
     width: int = Field(default=0, ge=0, le=100_000, description="图片宽（像素，0 表示未知）")
     height: int = Field(default=0, ge=0, le=100_000, description="图片高（像素，0 表示未知）")
+    keep_original: bool = Field(
+        default=False,
+        description="按次保留原图（默认压成 WebP 并限制长边 1600，省磁盘）",
+    )
 
 
 class NoteListCapturesInput(BaseModel):
@@ -228,6 +232,7 @@ def _add_capture(store: Store) -> Callable[[NoteAddCaptureInput], Any]:
             app_title=arguments.app_title,
             width=arguments.width,
             height=arguments.height,
+            keep_original=arguments.keep_original,
         )
 
     return run

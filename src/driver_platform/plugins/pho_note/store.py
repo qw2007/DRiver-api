@@ -16,6 +16,7 @@ P0 只做「截图进缓冲区 → 组笔记 → 读回来」；P1 补齐树的�
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -113,10 +114,19 @@ _MEDIA_TYPES: tuple[tuple[bytes, str, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
 )
 
+#: 媒体类型 → 落盘后缀（归一化后的 WebP 也要能查到后缀）。
+_SUFFIXES: dict[str, str] = {media_type: suffix for _, media_type, suffix in _MEDIA_TYPES}
+_SUFFIXES["image/webp"] = ".webp"
+
 #: 同层重名的自动后缀上限；超过说明调用方在拿名字当循环变量。
 _MAX_NAME_ATTEMPTS = 100
 
 NAME_LIMIT = 200
+
+#: 入库图片的长边上限（像素）。截图存原尺寸会把一个学期的课变成几百 MB；
+#: 1600 对「看代码/看公式」已经够清楚，再大只是浪费磁盘与模型 token。
+IMAGE_MAX_EDGE = 1600
+IMAGE_QUALITY = 82
 
 #: 新建笔记时可选套用的骨架。只有一份内置模板：网课笔记最常见的就是「课上抄定义、
 #: 记定理、标易错」，先给这三栏比给十份花模板更有用；用户不选模板时正文保持空。
@@ -148,6 +158,28 @@ def _detect_media(data: bytes) -> tuple[str, str]:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp", ".webp"
     raise InvalidArgumentsError("只接受 PNG / JPEG / WebP 图片")
+
+
+def _normalize_image(data: bytes) -> tuple[bytes, str] | None:
+    """把图片压成 WebP 并限制长边。Pillow 没装时返回 None（原样存）。
+
+    刻意**不**报错：截图是主线功能，装不装 Pillow 不该决定能不能记笔记；
+    代价是磁盘占用，这一点写在 README 与 CHANGELOG 的已知限制里。
+    """
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - 取决于环境
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            # convert() 返回新对象，类型与 ImageFile 不同，用独立变量承接。
+            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source
+            image.thumbnail((IMAGE_MAX_EDGE, IMAGE_MAX_EDGE))
+            buffer = io.BytesIO()
+            image.save(buffer, format="WEBP", quality=IMAGE_QUALITY, method=4)
+            return buffer.getvalue(), "image/webp"
+    except Exception:  # noqa: BLE001 - 坏图走原路径，由魔数校验兜底
+        return None
 
 
 class Store:
@@ -259,11 +291,19 @@ class Store:
         app_title: str | None,
         width: int,
         height: int,
+        keep_original: bool = False,
     ) -> dict[str, Any]:
         if not data:
             raise InvalidArgumentsError("图片内容是空的")
         media_type, suffix = _detect_media(data)
-        digest = hashlib.sha256(data).hexdigest()
+        stored, stored_type = data, media_type
+        if not keep_original:
+            # 默认压成 WebP 并限制长边；压不动（Pillow 没装/坏图）就原样存。
+            normalized = _normalize_image(data)
+            if normalized is not None:
+                stored, stored_type = normalized
+        media_type, suffix = stored_type, _SUFFIXES[stored_type]
+        digest = hashlib.sha256(stored).hexdigest()
         with self._lock, self._transaction(self._connection) as connection:
             existing = connection.execute(
                 "SELECT * FROM captures WHERE sha256 = ?", (digest,)
@@ -273,7 +313,7 @@ class Store:
             relative = Path("media") / digest[:2] / digest[2:4] / f"{digest}{suffix}"
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            _write_atomically(target, data)
+            _write_atomically(target, stored)
             capture_id = _new_id("cap")
             connection.execute(
                 "INSERT INTO captures (id, sha256, path, media_type, width, height, bytes,"
@@ -285,7 +325,7 @@ class Store:
                     media_type,
                     max(width, 0),
                     max(height, 0),
-                    len(data),
+                    len(stored),
                     source,
                     app_title,
                     _now(),

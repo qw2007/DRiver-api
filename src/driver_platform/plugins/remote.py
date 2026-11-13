@@ -26,6 +26,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -46,6 +48,15 @@ EXECUTE_PATH = "/execute"
 
 DEFAULT_TIMEOUT = 5.0
 """单次远程请求的超时秒数（``DRIVER_REMOTE_TIMEOUT`` 可覆盖）。"""
+
+#: 清单缓存时长。注册与重连都会读清单，60 秒内重复读同一份即可——
+#: 远端改了工具表要等这一分钟，换来的是「重启平台不打远端一串请求」。
+MANIFEST_CACHE_SECONDS = 60.0
+
+#: 连接层重试次数（含首次）。只重试**连接没建立**的错误：那种情况下请求根本没到
+#: 远端，重试不会把一次写操作执行两遍。超时与 5xx 不重试——远端慢了/坏了，重试只会更慢。
+RETRY_ATTEMPTS = 2
+RETRY_DELAY = 0.2
 
 #: 远端错误码 → 平台 HTTP 状态。只映射「调用方自己改一改就能成」的错，
 #: 其余（远端内部炸了、认不出的 code）一律 502：那是远端的可用性问题。
@@ -115,15 +126,26 @@ class RemoteClient:
         self.timeout = timeout
         #: 测试注入点：``httpx.MockTransport`` 同时实现同步与异步两套协议，一个字段够用。
         self._transport = transport
+        self._manifest_cache: tuple[float, RemoteManifest] | None = None
 
     def fetch_manifest(self) -> RemoteManifest:
         """拉清单（同步）。只在装载时跑一次，所以它阻塞一小会儿是可以接受的。"""
+        cached = self._manifest_cache
+        if cached is not None and time.monotonic() - cached[0] < MANIFEST_CACHE_SECONDS:
+            return cached[1]
         url = f"{self.base_url}{MANIFEST_PATH}"
-        try:
-            with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
-                response = client.get(url)
-        except httpx.HTTPError as exc:
-            raise self._unreachable(exc) from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
+                    response = client.get(url)
+                break
+            except httpx.HTTPError as exc:
+                # GET 是幂等的：连接失败与超时都可以安全重试一次。
+                if attempt >= RETRY_ATTEMPTS:
+                    raise self._unreachable(exc) from exc
+                time.sleep(RETRY_DELAY)
 
         payload = self._decoded(response)
         try:
@@ -139,17 +161,27 @@ class RemoteClient:
             )
         if not manifest.tools:
             raise RemoteToolFailedError(f"远程插件 {self.plugin_id} 的清单里没有任何工具")
+        self._manifest_cache = (time.monotonic(), manifest)
         return manifest
 
     async def call_tool(self, tool: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         """调用远端工具。入参原样转发——远端自己校验、自己报错。"""
         body: dict[str, Any] = {"tool": tool, "arguments": dict(arguments)}
         url = f"{self.base_url}{EXECUTE_PATH}"
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as client:
-                response = await client.post(url, json=body)
-        except httpx.HTTPError as exc:
-            raise self._unreachable(exc) from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout, transport=self._transport
+                ) as client:
+                    response = await client.post(url, json=body)
+                break
+            except httpx.HTTPError as exc:
+                # 只有「连接没建立」才重试：那种情况下请求没到远端，重试不会重复执行。
+                if attempt >= RETRY_ATTEMPTS or not _is_connect_failure(exc):
+                    raise self._unreachable(exc) from exc
+                await asyncio.sleep(RETRY_DELAY)
 
         payload = self._decoded(response)
         if not isinstance(payload, Mapping):
@@ -259,3 +291,11 @@ class RemotePlugin(Plugin):
 
     def tools(self) -> list[Tool[Any, Any]]:
         return list(self._tools)
+
+
+def _is_connect_failure(exc: httpx.HTTPError) -> bool:
+    """请求是否**根本没到远端**（连接失败、连接超时、连接池超时）。
+
+    只有这几种情况重试是安全的：写操作还没发出去，重试不会重复执行。
+    """
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))

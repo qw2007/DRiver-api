@@ -15,7 +15,7 @@ services:
   driver-platform:
     build:
       context: .
-    image: driver-platform:0.0.0
+    image: driver-platform:0.1.0
     environment:
       # —— 插件与工具（阶段 2）——
       DRIVER_PLUGINS: sqlite
@@ -28,7 +28,17 @@ services:
       DRIVER_LOG_FORMAT: json
       # —— 鉴权（阶段 4）：下面这对钥匙是演示用的，生产请改用 secrets 注入 ——
       DRIVER_AUTH_MODE: required
+      # 生产：把这两个值写进 .env（见 .env.example），compose 自动读取，别留在命令行历史里。
       DRIVER_API_KEYS: "${DRIVER_API_KEYS:-admin-key:plugin_admin,read-key:search_database|echo}"
+    # 阶段 8 加固：进程非 root（镜像里 USER driver）、根文件系统只读、/tmp 用内存盘。
+    # 容器里唯一需要写的是挂进来的数据卷 /data。
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: "1.0"
     volumes:
       - data:/data
     ports:

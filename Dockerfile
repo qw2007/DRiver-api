@@ -30,6 +30,22 @@ RUN pip install --no-cache-dir .
 # 部署资产：容器入口脚本 + 演示库种子（见 deploy/docker/entrypoint.py）。
 COPY deploy ./deploy
 
+# 阶段 8 加固：容器里的进程不跑 root。
+#   - 建一个固定 uid=10001 的普通用户（固定 uid 才能让宿主上的卷权限可预测）；
+#   - /data 是数据卷挂载点，先建好并交给它——卷首次初始化时继承这个属主；
+#   - 源码与 deploy 只读，属主是 root：进程能读不能改，被攻破也改不了自己的代码。
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin driver \
+    && mkdir -p /data \
+    && chown -R driver:driver /data \
+    && chmod -R a-w /app
+
+USER driver
+
+# 数据目录：compose 里是命名卷；单跑 docker run 时声明成卷，
+# 这样 `--read-only` 的根文件系统不会连数据库一起冻住。
+VOLUME ["/data"]
+ENV DRIVER_SQLITE_PATH=/data/demo.db
+
 EXPOSE 8000
 
 # 镜像级健康检查：docker run 直接起时也能看出是否可用；compose 里另有更短周期的同名检查。

@@ -15,3 +15,6 @@ htmlcov/
 pytest-cache-files-*/
 pytest-of-*/
 .incident-journal-staging/
+
+# 本机密钥（.env.example 是模板，.env 不提交）
+.env

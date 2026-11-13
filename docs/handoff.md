@@ -12,11 +12,11 @@
 |---|---|
 | 项目 | 连接 AI Agent（Codex / Claude / ChatGPT…）与数据库等工具的**中间层驱动平台**：工具总线 + 协议适配 + 插件宿主（不是业务系统） |
 | 技术栈 | Python 3.11+（CI 与实测 3.14）、FastAPI、pydantic v2、uvicorn；MCP 走官方 SDK（可选依赖） |
-| 进度 | **阶段 0–8 已完成并推送** —— 任务书的九阶段验收标准全部落地；后续是加固与发布流程（见第 3 节） |
-| 门禁现状 | `pytest` **276 passed**、覆盖率 **95%**（1257 语句 / 65 未覆盖）；`ruff check .` / `ruff format --check src tests deploy examples`（63 files）/ `mypy`（34 files）全绿 |
+| 进度 | **阶段 0–8 已完成并推送**，另加 5 个非阶段交付（PhoNote 插件 P0–P3、两轮收口）；包版本 `0.1.0`，tag `v0.1.0` + GitHub Release（见第 3 节） |
+| 门禁现状 | `pytest` **375 passed**、覆盖率 **94.75%**（2668 语句 / 140 未覆盖，CI 卡 90% 底线）；`ruff check .` / `ruff format --check src tests deploy examples`（77 files）/ `mypy`（47 files，含 `deploy/` 与 `examples/`）/ `bandit` 全绿 |
 | CI | `test` 与 `deploy` 两个任务在 GitHub Actions 上全绿（[run 37953653712](https://github.com/qw2007/DRiver-api/actions/runs/37953653712)，提交 `894ff44`；`deploy` 里已含多副本 overlay / `nginx -t` / 验收脚本语法的静态校验） |
 | 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3` |
-| 下一步 | 九阶段目标已收口；继续做的话先拍板第 3.3 节的四项，再看阶段 8 说明里最接近生产的两条限制（镜像瘦身/非 root、`/metrics` 收进内网） |
+| 下一步 | 九阶段目标与两轮收口（四项决策 + 八项补齐）都已完成，第 3.3 节四项已拍板；剩下的是第 3.2 节里「需要外部资源或收益不足」的项（3.11/3.12 矩阵、真编排、镜像瘦身到 241 MB 以下、推镜像仓库、跨进程 traceparent） |
 
 ---
 
@@ -65,8 +65,12 @@ python -m venv .venv
 .venv/bin/ruff check .
 .venv/bin/ruff format --check src tests deploy examples
 .venv/bin/mypy
-.venv/bin/pytest
+.venv/bin/pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-under=90
+.venv/bin/bandit -r src -q
+.venv/bin/python -m pip_audit --progress-spinner off
 ```
+
+后两条是 CI 的安全扫描；PostgreSQL 插件的集成测试要真库，没设 `DRIVER_TEST_POSTGRES_DSN` 时会自动 skip（例如 `docker run -d --name dp-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_USER=demo -e POSTGRES_DB=shop -p 55432:5432 postgres:16-alpine`，然后 `DRIVER_TEST_POSTGRES_DSN=postgresql://demo:secret@127.0.0.1:55432/shop`）。
 
 **Windows 受限沙箱的额外一步**（本机实测，见 [`environment.md`](environment.md)）：受限模式下 `python -m venv .venv` 会在 ensurepip 阶段失败（临时目录 DACL 问题）。做法是
 `python -m venv --without-pip .venv`，再用**提权**执行 `.venv\Scripts\python.exe -m ensurepip --upgrade` 与 `.venv\Scripts\python.exe -m pip install -e ".[dev]"`。
@@ -122,13 +126,13 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 
 1. ~~CI 覆盖率门禁未加~~ **已补**：CI 现在跑 `pytest --cov=driver_platform --cov-fail-under=90`（本地 94%，门禁卡 90% 是防一路下滑的底线）。
 2. ~~`bandit` / `pip-audit` 未进 CI~~ **已补**：CI 增加了 `bandit -r src -q` 与 `python -m pip_audit --progress-spinner off` 两步。
-3. **CI 只跑 Python 3.14**：`requires-python` 放宽到 3.11+，3.11 / 3.12 从未实测（要加矩阵很容易，就是时间成本）。
-4. **PostgreSQL 插件未落地**：`task-brief.md` 原计划「PostgreSQL 复用同一插件契约」，至今仍只有 SQLite 一个（本机 Docker 已可用，可用 Testcontainers 补）。
-5. **`mypy` 只检查 `src`**：`tests/`、`deploy/`、`examples/` 不在类型检查范围内。
-6. **包版本仍是 `0.0.0`，没有 tag / release，也不推镜像仓库**：交付以「源码 + compose」为准；对外契约版本走各工具的 `contract_version`，与包版本解耦。
-7. **阶段 6 远程插件的留白**：清单只在装载时拉一次，无重试/熔断/缓存/热更新/签名校验；`base_url` 是单点；每次调用新建 HTTP 客户端；客户端会继承宿主机代理设置。
-8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 无鉴权、指标是进程内的（重启归零）、无 traceparent（`request_id` 不跨进程）。
-9. **阶段 7 / 8 部署留白**：默认仍是单副本；容器 root、无资源限额、无只读根文件系统；第三方镜像钉 amd64 摘要；compose 里的演示钥匙是明文；多副本是单机 `--scale` 而非编排（不自动补副本、无跨宿主）。
+3. **CI 只跑 Python 3.14**：`requires-python` 放宽到 3.11+，3.11 / 3.12 从未实测（要加矩阵很容易，就是三倍 CI 时间，发版前再加）。
+4. ~~PostgreSQL 插件未落地~~ **已补**：`search_postgres`（`src/driver_platform/plugins/postgres.py`）复用 SQLite 的入参/输出模型，只读会话 + `connect_timeout=5`，可选依赖 `pip install 'driver-platform[postgres]'`，配置 `DRIVER_POSTGRES_DSN`；真实集成在本机 `postgres:16-alpine` 上跑过。
+5. **`mypy` 已覆盖 `src` + `deploy` + `examples`**（47 个文件），仍**不含 `tests/`**（mock 噪音大于收益）。
+6. **包版本已定 `0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随），发布物是 git tag `v0.1.0` + GitHub Release；**仍不推镜像仓库**（镜像由 `docker compose build` 现构）。
+7. **阶段 6 远程插件的留白**：清单缓存 60 秒、连接失败重试一次（读超时与 5xx **不**重试）；仍无熔断/热更新/签名校验；`base_url` 是单点；每次调用新建 HTTP 客户端；客户端会继承宿主机代理设置。
+8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 默认无鉴权（可开 `DRIVER_METRICS_PROTECTED=1` 走同一套凭证）、指标是进程内的（重启归零）、无 traceparent（`request_id` 不跨进程）。
+9. **阶段 7 / 8 部署留白**：默认仍是单副本；容器已改非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU，但镜像仍 241 MB、第三方镜像钉 amd64 摘要、基础镜像用标签、compose 演示钥匙是明文默认值（对外必须 `.env` 覆盖）；多副本是单机 `--scale` 而非编排（不自动补副本、无跨宿主）。
 
 ### 3.3 当年的四个开放项（已全部拍板）
 

@@ -145,6 +145,7 @@ class UploadCaptureBody(BaseModel):
     app_title: str | None = Field(default=None, max_length=200)
     width: int = Field(default=0, ge=0, le=100_000)
     height: int = Field(default=0, ge=0, le=100_000)
+    keep_original: bool = False
 
 
 class SetImagesBody(BaseModel):
@@ -326,6 +327,7 @@ def build_router() -> APIRouter:
             app_title=body.app_title,
             width=body.width,
             height=body.height,
+            keep_original=body.keep_original,
         )
 
     @router.get("/captures/{capture_id}/image", dependencies=[Read])

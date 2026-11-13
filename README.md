@@ -56,6 +56,21 @@ curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: applicatio
      -d '{"tool":"search_database","arguments":{"table":"drivers","columns":["id","name"],"limit":2}}'
 ```
 
+`postgres` 插件是同一个工具形状的另一种后端（`search_postgres`，入参输出与 `search_database` 完全一致，只是后端换成 PostgreSQL 的只读会话）：
+
+```bash
+pip install 'driver-platform[postgres]'         # 可选依赖：psycopg[binary]
+DRIVER_PLUGINS=postgres \
+DRIVER_POSTGRES_DSN='postgresql://user:secret@db.internal:5432/shop' \
+  .venv/Scripts/python -m uvicorn driver_platform.main:app --port 8000
+curl -X POST http://127.0.0.1:8000/v1/tools/execute -H "Content-Type: application/json" \
+     -d '{"tool":"search_postgres","arguments":{"table":"customers","filters":{"city":"上海"},"limit":2}}'
+```
+
+连接用 `options=-c default_transaction_read_only=on` 强制只读、`connect_timeout=5`（不设时连一个死端口会一直挂着，把平台启动拖住）。DSN 里的密码不会进日志：错误信息里只回 `host/database`。
+
+如果 `postgres` 插件没写 DSN、或连不上，**启动即失败**（和 sqlite 同一套策略：宁可起不来，也不要带一个坏插件跑起来）。
+
 ### 接协议（阶段 3）
 
 协议也是**默认关**：`DRIVER_PROTOCOLS` 留空则全关，写了不支持的协议名启动即失败。
@@ -102,6 +117,8 @@ DRIVER_METRICS_ENABLED=1 DRIVER_LOG_FORMAT=json DRIVER_LOG_LEVEL=INFO \
 curl http://127.0.0.1:8000/metrics | head                 # 关掉开关时这里返回 404
 curl -i -H "X-Request-ID: trace-1" http://127.0.0.1:8000/health | grep -i x-request-id
 ```
+
+`/metrics` 默认**不要求凭证**（抓它的是集群内的 Prometheus）。要把端口暴露到不可信网络，就再开一层：`DRIVER_METRICS_PROTECTED=1` 之后它走和 `/v1/tools` 同一套凭证——无钥匙 401，带一把有效钥匙 200；`DRIVER_AUTH_MODE=off` 时这个开关没有意义（没有凭证可校验）。
 
 四个指标：`driver_http_requests_total{method,route,status}`、`driver_http_request_duration_seconds{method,route}`、`driver_tool_calls_total{tool,outcome}`、`driver_tool_duration_seconds{tool,outcome}`。`outcome` 与错误信封的 `code` 是**同一套词汇**（`success` / `permission_denied` / `invalid_arguments` / `tool_not_found` / `tool_execution_failed` / `internal_error`）；`route` 只取**路由模板**、未知工具名统一进 `unknown`——两者都是为了不让调用方的输入撑爆时间序列基数。工具执行的埋点只有一处（`tools/executor.py`），所以 HTTP、MCP、以后接的远程插件自动同源。
 
@@ -153,6 +170,8 @@ curl http://127.0.0.1:8000/notes/api/tree  # 给壳用的 REST 层（DRIVER_NOTE
 二十六个工具：树（`note_tree`/`note_node_create`/`note_node_rename`/`note_node_move`/`note_node_delete`）、截图缓冲（`note_add_capture`/`note_list_captures`）、笔记（`note_compose`/`note_get`/`note_list`/`note_update`/`note_set_images`）、批注（`note_annotate`/`note_annotate_delete`）、版本（`note_revisions`/`note_rollback`）、导出（`note_export`）、AI（`note_summarize`/`note_chat`/`note_messages`/`note_apply_patch`/`note_ingest_ai_reply`）、备份与同步（`note_backup`/`note_sync_push`/`note_sync_pull`/`note_sync_status`）。
 
 数据落在 `DRIVER_NOTES_DIR`（默认 `~/PhoNote`）：`phonote.db`（自由文件树 + 图片元数据 + 批注 + 版本 + 消息）+ `media/ab/cd/<sha256>.<ext>`（内容寻址，同一张图只存一份）。
+
+**截图默认压成 WebP**（长边 1600、质量 82）：一个学期的课存原尺寸会变成几百 MB。要留原图就按次传 `keep_original=true`（`note_add_capture` 与 `POST /notes/api/captures` 都支持），这时字节原样落盘、`media_type` 保持原格式。压缩需要可选依赖 Pillow（`pip install 'driver-platform[images]'`）；没装也能用，图片按原样存——能不能装库不该决定能不能记笔记。
 新建笔记可套内置骨架 `template=lecture`（`## 定义 / ## 定理 · 结论 / ## 易错点 / ## 例题`）：`note_node_create` 与 `POST /notes/api/nodes` 都接受这个字段，显式给 `body_md` 时以正文为准；壳的设置里勾「新建笔记套用骨架」即默认带上。
 
 三把钥匙的分工（工具作用域与 REST 作用域是两套，别混）：
@@ -254,6 +273,23 @@ python deploy/traffic_probe.py --seconds 30 --workers 4 --expect 200
   策略（1.x 能加什么、什么必须升主版本）写在[阶段 8 说明](docs/stages/stage-8.md)的「契约兼容策略」。
 - 只想本地单副本时原来的 `docker compose up -d --build` 一字不用改；两个 overlay 文件是叠加关系。
 
+## 版本、质量门禁与发布
+
+当前版本 **0.1.0**（`src/driver_platform/__init__.py` 与 `pyproject.toml` 同一处真话，`docker-compose.yml` 的镜像标签跟着走；有个测试专门守这三点一致）。
+
+四道本地门禁，CI 里跑同一套：
+
+```bash
+ruff check .
+ruff format --check src tests deploy examples
+mypy                                   # 覆盖 src + deploy + examples（不含 tests：mock 噪音大）
+pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-under=90
+```
+
+CI 还跑 `bandit -r src -q` 与 `pip-audit`，外加两个非单元测试任务：`deploy`（compose 起全平台冒烟）与多副本配置静态校验（overlay 合并、`nginx -t`、验收脚本语法）。
+
+发布口径：`v0.1.0` 打 git tag 并建 GitHub Release；**不推镜像仓库**（镜像由 `docker compose build` 在本机/CI 现构，第三方镜像钉摘要）。版本号语义：接口契约（工具名、入参、错误码、响应形状）不兼容地变才升主版本——见[阶段 8 的契约兼容策略](docs/stages/stage-8.md)。
+
 ## 目录结构
 
 ```
@@ -307,15 +343,17 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 
 ## 已知限制
 
-- CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测。
+- CI 以 Python 3.14 为准，`requires-python` 放宽到 3.11+，但 3.11/3.12 未实测（加矩阵 = 三倍 CI 时间，且本机只有 3.14 可对照）。
 - 工具执行无超时与并发限制，细节见阶段 1 说明的「已知限制」。
 - SQLite 插件单连接串行、`total` 多一次 `COUNT(*)`，细节见阶段 2 说明的「已知限制」。
 - MCP 侧只做 stdio 与 tools（无 HTTP/SSE、无 resources/prompts、一次一个客户端），协议版本跟随 SDK，`output_model` 即协议输出契约，细节见阶段 3 说明的「已知限制」。
 - 鉴权默认关且只到「工具名」这一层：不配 `DRIVER_AUTH_MODE=required` 就是开放的，密钥明文放在环境变量里，没有速率限制、配额、审计与吊销，细节见阶段 4 说明的「已知限制」。
 - 指标默认关、`/metrics` 无鉴权且是**进程内**的（重启归零，多副本各算各的）；`X-Request-ID` 只在**本进程内**贯穿（没有 traceparent），日志不记请求体，直方图用默认桶（5 ms–10 s），细节见阶段 5 说明的「已知限制」。
 - 远程插件默认关、清单只在装载时拉一次、无重试/熔断/签名校验，远端地址是单点，每次调用新建 HTTP 客户端（不复用连接池），细节见阶段 6 说明的「已知限制」。
-- 默认那份 `docker-compose.yml` 是**单副本**：容器以 root 跑、无资源限额、无 `depends_on` 之外的启动编排，Prometheus / Grafana 钉的摘要是 amd64 平台摘要，`docker compose down -v` 会删数据卷，细节见阶段 7 说明的「已知限制」。
+- 默认那份 `docker-compose.yml` 是**单副本**：容器已改成非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU 限额，但 Prometheus / Grafana 钉的摘要是 amd64 平台摘要、基础镜像用标签（安全补丁自动进来、旧版也自动进来），`docker compose down -v` 会删数据卷，细节见阶段 7 说明的「已知限制」。
 - 多副本是**单机 Compose 的 `--scale`**，不是编排：nginx 解析有 5 秒窗口（靠重试兜底）、重试对非幂等请求也开着、
   副本不会自动补回、多副本共享同一份只读数据卷、探针只衡量成功率不衡量延迟分布；`/metrics` 经网关暴露且仍无鉴权；
   远程插件的 HTTP 客户端会继承宿主机代理设置。细节见阶段 8 说明的「已知限制」。
+- PostgreSQL 插件只做「只读等值查询」，没有事务控制、连接池、SSL 参数可调，`connect_timeout` 固定 5 秒；没装 `psycopg` 时插件装载直接失败（不降级）。
+- PhoNote 的截图压缩依赖 Pillow：没装时图片按原样落盘（不报错，但体积不受控）；`/metrics` 默认仍公开（要收紧就开 `DRIVER_METRICS_PROTECTED=1`）；compose 里的演示钥匙是**默认值**，对外部署前必须用 `.env` 覆盖。
 - 本机（Windows + DSH 沙箱）有三处环境级坑：pip / 全量 pytest / docker / **联网 Git 操作**需提权，GitHub 需 `sslBackend=schannel` 直连，Docker 需镜像加速——**这些只是本机噪声，不影响 CI**，逐条解法见[环境与工具手册](docs/environment.md)。

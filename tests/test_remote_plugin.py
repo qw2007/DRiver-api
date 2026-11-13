@@ -370,3 +370,65 @@ def test_remote_tool_instances_are_bound_to_their_client():
     plugin.setup()
 
     assert isinstance(plugin.tools()[0], RemoteTool)
+
+
+# —— 阶段 8 收口：连接层重试与清单缓存 ——
+
+
+def test_manifest_is_cached_for_a_minute():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json=MANIFEST_BODY)
+
+    client = _client(handler)
+    first = client.fetch_manifest()
+    second = client.fetch_manifest()
+
+    assert len(calls) == 1, "60 秒内的第二次装载不应该再打远端"
+    assert first is second
+
+
+def test_manifest_fetch_retries_a_connection_failure_once():
+    attempts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.url.path)
+        raise httpx.ConnectError("boom", request=request)
+
+    client = _client(handler)
+    with pytest.raises(RemoteUnavailableError):
+        client.fetch_manifest()
+
+    assert len(attempts) == 2, "连接没建立时可以安全重试一次"
+
+
+def test_manifest_fetch_recovers_when_the_retry_succeeds():
+    attempts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.url.path)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, json=MANIFEST_BODY)
+
+    manifest = _client(handler).fetch_manifest()
+
+    assert manifest.plugin_id == "echo_farm"
+    assert len(attempts) == 2
+
+
+def test_call_tool_does_not_retry_a_timeout():
+    # 超时意味着请求**可能已经到了远端**：重试会让一次写操作执行两遍。
+    attempts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.url.path)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = _client(handler)
+    with pytest.raises(RemoteUnavailableError):
+        asyncio.run(client.call_tool("remote_echo", {"message": "hi"}))
+
+    assert len(attempts) == 1
