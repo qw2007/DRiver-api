@@ -434,6 +434,10 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 - GHCR：本机 `docker push ghcr.io/qw2007/driver-platform:0.1.0` 失败，原文
   `error from registry: permission_denied: The token provided does not match expected scopes.`
   （本机 token 只有 `gist, read:org, repo, workflow`）——推送因此改为由 CI 的 `GITHUB_TOKEN` 完成。
+  实测结果（[run 43436150309](https://github.com/qw2007/DRiver-api/actions/runs/43436150309)，`publish` 任务 success）：
+  `0.1.0: digest: sha256:a0c2cda704dfe208b0ebe56e030e9b8783ddeaf8a6b6467decd23dc8b726223e`，
+  `sha-9b51c59: digest: sha256:a0c2cda7…223e`，仓库 `ghcr.io/qw2007/driver-platform`。
+  该 run 的 `test (3.11)` / `test (3.12)` / `test (3.14)` / `deploy` / `publish` 五个任务全部 success。
 - K8s：**没有集群可跑**（Docker Desktop 的内置 Kubernetes 在 7 分钟内始终没有生成 kubeconfig；
   `kind` 的二进制从 GitHub Releases 下载返回 HTTP 000；`kubectl apply --dry-run=client` 也需要 API server 做 discovery）。
   因此只做到结构静态校验：`tests/test_k8s_manifests.py` 7 个用例守住副本数/策略/探针/securityContext/Secret 引用/

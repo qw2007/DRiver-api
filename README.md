@@ -308,7 +308,7 @@ pytest --cov=driver_platform --cov-report=term-missing:skip-covered --cov-fail-u
 CI 还跑 `bandit -r src -q` 与 `pip-audit`，外加两个非单元测试任务：`deploy`（compose 起全平台冒烟）与多副本配置静态校验（overlay 合并、`nginx -t`、验收脚本语法）。
 
 发布口径：`v0.1.0` 打 git tag 并建 GitHub Release；镜像由 CI 的 `publish` 任务推到 GHCR（`ghcr.io/qw2007/driver-platform:<版本>` 与 `:sha-<7位>`，仅 master，`packages: write`）。
-本机 token 没有 `write:packages` 权限，实测 `docker push` 报 `permission_denied: The token provided does not match expected scopes`，所以推送只走 CI。版本号语义：接口契约（工具名、入参、错误码、响应形状）不兼容地变才升主版本——见[阶段 8 的契约兼容策略](docs/stages/stage-8.md)。
+本机 token 没有 `write:packages` 权限，实测 `docker push` 报 `permission_denied: The token provided does not match expected scopes`，所以推送只走 CI；现已推成功：`0.1.0` 与 `sha-9b51c59` 两个 tag，digest `sha256:a0c2cda7…223e`。版本号语义：接口契约（工具名、入参、错误码、响应形状）不兼容地变才升主版本——见[阶段 8 的契约兼容策略](docs/stages/stage-8.md)。
 
 ## 目录结构
 
