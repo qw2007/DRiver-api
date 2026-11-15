@@ -15,8 +15,8 @@
 | 进度 | **阶段 0–8 已完成并推送**，另加 5 个非阶段交付（PhoNote 插件 P0–P3、两轮收口）；包版本 `0.1.0`，tag `v0.1.0` + GitHub Release（见第 3 节） |
 | 门禁现状 | `pytest` **391 个用例、0 失败**（3 个 PostgreSQL 集成用例本机跳过，CI 带 `postgres` service 会真跑）、覆盖率 **93.12%**（2719 语句 / 187 未覆盖，CI 卡 90% 底线）；`ruff check .` / `ruff format --check src tests deploy examples`（79 files）/ `mypy`（47 files，含 `deploy/` 与 `examples/`）/ `bandit` 全绿 |
 | CI | 三个任务：`test`（Python **3.11 / 3.12 / 3.14** 矩阵 + `postgres` service）、`deploy`（compose 建镜像 + 健康轮询 + 接口冒烟）、`publish`（master 上推 GHCR `ghcr.io/qw2007/driver-platform:<版本>` 与 `:sha-<7位>`）；`deploy` 里还含多副本 overlay / `nginx -t` / 验收脚本语法的静态校验 |
-| 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3` |
-| 下一步 | 九阶段目标与四轮收口都已完成（四项决策 + 八项补齐 + 五项编排分发）。**唯一没验证的是 K8s 清单**：本机起不来集群、`kind` 也下载不到，清单只做了结构静态校验（`tests/test_k8s_manifests.py`）；其余待办都要外部资源（GHCR 私有镜像的 `imagePullSecrets`、HPA 的 metrics-server） |
+| 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3`；K8s 见 `kubectl apply -k deploy/k8s`（需先把镜像弄进集群，见 README） |
+| 下一步 | 九阶段目标与四轮收口都已完成（四项决策 + 八项补齐 + 五项编排分发）。K8s 清单已在 Docker Desktop 的单节点集群上真跑过：`kubectl apply -k deploy/k8s` → 3 副本就绪 → 集群内调 `search_database` 正常 → `rollout restart` 期间 1367 次请求 0 失败。剩下要外部资源：GHCR 私有镜像的 `imagePullSecrets`、HPA 的 metrics-server、多节点集群 |
 
 ---
 
@@ -132,7 +132,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 6. **包版本已定 `0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随），发布物是 git tag `v0.1.0` + GitHub Release + **CI 的 `publish` 任务推 GHCR**（`:0.1.0` 与 `:sha-<7位>`；本机 token 无 `write:packages`，所以本机不推）。
 7. **阶段 6 远程插件的留白**：清单缓存 60 秒、连接失败重试一次（读超时与 5xx **不**重试）；仍无熔断/热更新/签名校验；`base_url` 是单点；每次调用新建 HTTP 客户端；客户端会继承宿主机代理设置。
 8. **阶段 5 可观测性留白**：指标默认关、`/metrics` 默认无鉴权（可开 `DRIVER_METRICS_PROTECTED=1` 走同一套凭证）、指标是进程内的（重启归零）；跨进程链路已接 W3C `traceparent`（进站解析、出网传播、日志带 `trace_id`），但只做传播、不采样也不导出 span。
-9. **阶段 7 / 8 / 9 部署留白**：默认仍是单副本；容器已非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU，镜像换 `python:3.14-alpine` 多阶段后 **118 MB**（此前 245 MB），代价是 musl；第三方镜像仍钉 amd64 摘要、基础镜像用标签、compose 演示钥匙是明文默认值（对外必须 `.env` 覆盖）；多副本在 compose 里是单机 `--scale`，K8s 清单（`deploy/k8s/`，3 副本 + `maxUnavailable: 0` + HPA + PDB）**未在真集群 apply 过**——本机起不来集群、`kind` 也下载不到。
+9. **阶段 7 / 8 / 9 部署留白**：默认仍是单副本；容器已非 root（uid 10001）+ 只读根文件系统 + `no-new-privileges` + 512m/1 CPU，镜像换 `python:3.14-alpine` 多阶段后 **118 MB**（此前 245 MB），代价是 musl；第三方镜像仍钉 amd64 摘要、基础镜像用标签、compose 演示钥匙是明文默认值（对外必须 `.env` 覆盖）；多副本在 compose 里是单机 `--scale`，K8s 清单（`deploy/k8s/`，3 副本 + `maxUnavailable: 0` + `preStop: sleep 5` + HPA + PDB）已在 Docker Desktop 单节点集群上验过（apply、3 副本就绪、滚动 0 失败），但没覆盖多节点调度、跨宿主网络与 PDB 驱逐演练，HPA 也因缺 metrics-server 不真扩缩容。
 
 ### 3.3 当年的四个开放项（已全部拍板）
 
@@ -140,7 +140,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 |---|---|
 | CI 加 `--cov-fail-under`？ | **加**，阈值 90%（`.github/workflows/ci.yml` 的 test 步骤） |
 | `bandit` / `pip-audit` 进 CI？ | **进**，与覆盖率门禁同一 job |
-| 是否上真正的编排层（K8s）？ | **上，但只到清单层**：`deploy/k8s/` 给了 Deployment/Service/HPA/PDB/kustomization 与结构测试，`kubectl apply -k` 一行起全套；本机没有可用集群，**未做真集群验收** |
+| 是否上真正的编排层（K8s）？ | **上，且已真跑过**：`deploy/k8s/` 的 Deployment/Service/HPA/PDB/kustomization 在 Docker Desktop 内置单节点集群（v1.36.1）上 apply 成功、3 副本就绪、滚动 0 失败；`preStop: sleep 5` 是这轮实测逼出来的修复 |
 | 技术栈换不换？ | **不换**，继续 Python + FastAPI（九个阶段与 PhoNote 全建在上面） |
 
 产出这一组结论的对话在 2026-11-13（用户逐条确认）。若将来要推翻其中任何一条，先改 `docs/stages/stage-7.md` / `stage-8.md` 的对应决策记录，再动代码。

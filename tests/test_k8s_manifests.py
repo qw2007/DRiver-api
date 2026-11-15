@@ -59,6 +59,11 @@ def test_deployment_is_hardened_and_never_serves_before_it_is_ready(
     assert container["securityContext"]["allowPrivilegeEscalation"] is False
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     # 探针必须打 /health：/metrics 可能被 DRIVER_METRICS_PROTECTED 保护起来
+    # 端点摘除是异步的：没有 preStop 时，进程先收到 SIGTERM 停收新连接，而 kube-proxy 还在往这个
+    # Endpoint 送流量。真集群实测（140 秒 1367 次请求）加 sleep 5 后滚动期间 0 失败。
+    pre_stop = container["lifecycle"]["preStop"]["exec"]["command"]
+    assert pre_stop[:2] == ["sh", "-c"]
+    assert "sleep" in pre_stop[2]
     assert container["readinessProbe"]["httpGet"]["path"] == "/health"
     assert container["livenessProbe"]["httpGet"]["path"] == "/health"
     assert container["resources"]["limits"]["memory"]

@@ -288,9 +288,21 @@ kubectl -n driver-platform get pods,svc,hpa,pdb
   `pdb.yaml`（驱逐时至少留 2 个）、`secret.example.yaml`（演示钥匙占位，真部署用 `kubectl create secret` 覆盖）。
 - **数据卷是 emptyDir**：SQLite 不能多副本共享写，所以每个副本一份演示库（入口脚本启动时种）。
   真要多副本共享数据，应开 PostgreSQL 插件（`DRIVER_PLUGINS=postgres`），而不是把 `/data` 挂成 RWO 卷。
-- **诚实标注**：本机没有可用集群（Docker Desktop 内置 Kubernetes 未能启动、`kind` 的二进制下载被网络阻断），
-  所以这批清单只做到「结构静态校验」（`tests/test_k8s_manifests.py`，7 个用例），**没有在真集群上 apply 过**。
-  校验命令 `kubectl apply --dry-run=client` 也需要 API server 做 discovery，离线不可用——这点写进了已知限制。
+- **真集群验过**（Docker Desktop 内置 Kubernetes，`docker-desktop` 上下文，v1.36.1 单节点、containerd）：
+  `kubectl apply -k deploy/k8s` 六个对象全部创建成功；3 个副本 `1/1 Running`（只读根文件系统、非 root、emptyDir、
+  探针都通过）；集群内 `http://driver-platform/health` → `{"status":"ok"}`，带 `X-API-Key: read-key` 调
+  `search_database` 返回上海两行，响应头带 `traceparent: 00-…-01`；`kubectl rollout restart` 期间 140 秒内 1367 次请求
+  **0 失败**（连续跑两轮都是 0）。
+- **`preStop: sleep 5` 是真集群逼出来的**：端点摘除是异步的——没有它时进程先收到 SIGTERM 停止接收新连接，而 kube-proxy
+  还在往这个 Endpoint 送流量。早先两次探测（一次无 preStop、一次在 `apply` 触发的滚动还没结束时又叠加了 `restart`）
+  分别出现 3 次与 10 次 `URLError`；加上 5 秒 preStop 后，干净滚动稳定为 0。K8s 侧没有 nginx 那种
+  `proxy_next_upstream` 兜底，所以这一点只能靠 preStop 解决。
+- **私有镜像的加载**：GHCR 仓库是私有的，集群没有拉取凭据。本机验证用的是
+  `docker save driver-platform:0.1.0 -o dp-image.tar` → 特权 Pod 挂宿主根目录 → `chroot /host /usr/local/bin/ctr -n k8s.io images import`
+  → `ctr images tag` 成 `ghcr.io/qw2007/driver-platform:0.1.0`（Deployment 里的名字），配合默认的 `IfNotPresent`。
+  真部署应给命名空间配 `imagePullSecrets`。
+- **HPA 报 `cpu: <unknown>`**：单节点集群没装 metrics-server，HPA 只能读 `minReplicas`，不会真的扩缩容；
+  这是集群组件的缺口，不是清单的问题。
 
 ## 版本、质量门禁与发布
 

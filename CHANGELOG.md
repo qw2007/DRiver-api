@@ -438,15 +438,21 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
   `0.1.0: digest: sha256:a0c2cda704dfe208b0ebe56e030e9b8783ddeaf8a6b6467decd23dc8b726223e`，
   `sha-9b51c59: digest: sha256:a0c2cda7…223e`，仓库 `ghcr.io/qw2007/driver-platform`。
   该 run 的 `test (3.11)` / `test (3.12)` / `test (3.14)` / `deploy` / `publish` 五个任务全部 success。
-- K8s：**没有集群可跑**（Docker Desktop 的内置 Kubernetes 在 7 分钟内始终没有生成 kubeconfig；
-  `kind` 的二进制从 GitHub Releases 下载返回 HTTP 000；`kubectl apply --dry-run=client` 也需要 API server 做 discovery）。
-  因此只做到结构静态校验：`tests/test_k8s_manifests.py` 7 个用例守住副本数/策略/探针/securityContext/Secret 引用/
-  镜像 tag 与包版本一致/Service 与 PDB 的 selector 一致。**清单未在真集群上 apply 过**。
+- K8s：**已在真集群上验过**（Docker Desktop 内置 Kubernetes 第二次尝试成功启动：`docker-desktop` 上下文、
+  v1.36.1 单节点 kind 模式、containerd 2.3.1）。`kubectl apply -k deploy/k8s` → namespace / secret / service /
+  deployment / pdb / hpa 六个对象全部创建；3 个副本 `1/1 Running`（只读根文件系统 + 非 root + emptyDir + 探针全过）；
+  集群内 `http://driver-platform/health` → `{"status":"ok"}`，`X-API-Key: read-key` 调 `search_database` 返回上海两行，
+  响应头 `traceparent: 00-d744b4fd66e54fd899172c3df12ec979-d6ba0a425d364f71-01`；
+  `kubectl rollout restart` 期间 140 秒 1367 次请求 **0 失败**（`{"ok": 1367, "bad": 0}`，连续两轮）。
+  镜像加载走 `docker save` → 特权 Pod `chroot /host ctr -n k8s.io images import` → `ctr images tag`（GHCR 私有仓库无拉取凭据）。
+  HPA 显示 `cpu: <unknown>`：单节点没装 metrics-server。
+  **本阶段新增的真缺陷**：端点摘除是异步的，没有 `preStop` 时滚动会漏连接（早先两次探测分别 3 次、10 次 `URLError`）；
+  加 `lifecycle.preStop.exec: ["sh","-c","sleep 5"]` 后稳定为 0，`tests/test_k8s_manifests.py` 同步加了断言。
 
 ### 已知限制
 
 - 3.11/3.12 的结论只来自 CI，本机无法对照复现。
-- K8s 清单未经真集群验证；HPA 依赖 metrics-server（kind/minikube 默认不装）。
+- K8s 只在单节点 kind 集群（Docker Desktop 内置）验过：多节点调度、跨宿主网络、PDB 驱逐演练都没覆盖；HPA 依赖 metrics-server（该集群未装，显示 `cpu: <unknown>`）。
 - alpine 镜像用 musl；若将来引入需要 glibc 的扩展（某些二进制轮子），需回到 slim 或换 musllinux 轮子。
 - 镜像仍钉 amd64 摘要的第三方服务（Prometheus/Grafana）与标签基础镜像的取舍未变；GHCR 仓库为私有，拉取需 `imagePullSecrets`。
 - traceparent 不采样、不导出 span；下游服务若忽略该头，链路只到「本进程 → 下游进程」这一跳。
@@ -456,7 +462,7 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 - **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 5 个非阶段交付（PhoNote 插件 P0/P1/P2/P3 + 收口四项决策 + 收口八项能力补齐，见上文；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
 - **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **79 files** already formatted；`mypy` → Success: no issues found in **47 source files**（已覆盖 `src` + `deploy` + `examples`）；`pytest --cov --cov-fail-under=90` → **391 个用例、0 失败**（3 个 PostgreSQL 集成用例本机无库跳过；CI 里带 `postgres` service 会真跑），覆盖率 **93.12%**（2719 语句 / 187 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
 - **包版本**：**`0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随；对外契约版本仍走各工具的 `contract_version`，与包版本解耦）；发布物是 git tag `v0.1.0` + GitHub Release + CI 推到 GHCR 的镜像（`:0.1.0` 与 `:sha-<7位>`）；
-- **下一步**：九阶段目标与四轮收口全部落地（详见上文各节）。仍未验证的一件事是 **K8s 清单没有在真集群上 apply 过**（本机 Docker Desktop 的内置集群起不来、`kind` 也下载不到）；除此之外的待办都是「需要外部资源或收益不足」：镜像推私有仓库的拉取凭据（`imagePullSecrets`）、HPA 依赖的 metrics-server、3.11/3.12 的本机复现。
+- **下一步**：九阶段目标与四轮收口全部落地（详见上文各节），K8s 清单已在 Docker Desktop 的单节点集群上真跑过（`kubectl apply -k` → 3 副本就绪 → 滚动 1367 次请求 0 失败）。剩下的都是「需要外部资源或收益不足」：镜像推私有仓库的拉取凭据（`imagePullSecrets`）、HPA 依赖的 metrics-server、3.11/3.12 的本机复现。
 
 ## 已知限制（汇总）
 

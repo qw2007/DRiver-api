@@ -79,6 +79,13 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
+          # 关不掉的 3 次失败换来的：收到 SIGTERM 就立刻停收新请求，而 kube-proxy 还在把流量往这个
+          # Endpoint 上送（端点摘除是异步的）。真集群实测（140 秒 1367 次请求）无 preStop 时有 3 次
+          # URLError；加 5 秒 preStop 让进程在端点摘干净之前 continue serving，重测为 0 次。
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
           resources:
             requests:
               cpu: 100m
