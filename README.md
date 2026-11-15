@@ -283,7 +283,7 @@ kubectl -n driver-platform rollout status deploy/driver-platform
 kubectl -n driver-platform get pods,svc,hpa,pdb
 ```
 
-- 清单在 `deploy/k8s/`：`deployment.yaml`（3 副本、`maxUnavailable: 0`、只读根文件系统、非 root、drop ALL、
+- 清单在 `deploy/k8s/`：`deployment.yaml`（默认 8 副本、`maxUnavailable: 0`、只读根文件系统、非 root、drop ALL、
   `/health` 探针、128Mi/512m 资源上限）、`service.yaml`（ClusterIP 80 → 8000）、`hpa.yaml`（3→8 副本，CPU 70%）、
   `pdb.yaml`（驱逐时至少留 2 个）、`secret.example.yaml`（演示钥匙占位，真部署用 `kubectl create secret` 覆盖）。
 - **数据卷是 emptyDir**：SQLite 不能多副本共享写，所以每个副本一份演示库（入口脚本启动时种）。

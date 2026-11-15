@@ -49,7 +49,7 @@ def test_deployment_is_hardened_and_never_serves_before_it_is_ready(
 ) -> None:
     deployment = documents["deployment.yaml"]
     spec = deployment["spec"]
-    assert spec["replicas"] == 3
+    assert spec["replicas"] == 8
     assert spec["strategy"]["rollingUpdate"]["maxUnavailable"] == 0  # 先起新的再停旧的
     pod = spec["template"]["spec"]
     assert pod["securityContext"]["runAsNonRoot"] is True
@@ -90,7 +90,7 @@ def test_image_tag_follows_the_package_version(documents: dict[str, Any]) -> Non
     assert kustomization["images"][0]["newTag"] == driver_platform.__version__
 
 
-def test_service_pdb_and_hpa_agree_on_three_replicas(documents: dict[str, Any]) -> None:
+def test_service_pdb_and_hpa_agree_on_the_replica_ceiling(documents: dict[str, Any]) -> None:
     service = documents["service.yaml"]
     assert service["spec"]["type"] == "ClusterIP"
     assert service["spec"]["ports"][0]["port"] == 80

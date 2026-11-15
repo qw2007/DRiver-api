@@ -401,7 +401,7 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 1. **CI 矩阵**（`.github/workflows/ci.yml`）：`test` 任务跑 `3.11 / 3.12 / 3.14` 三档；静态检查、覆盖率门禁、
    bandit 与 pip-audit 只在 3.14 上跑一遍（重复三遍只是耗额度）。
 2. **K8s 清单**（`deploy/k8s/`）：`namespace / secret.example / deployment / service / hpa / pdb / kustomization`，
-   `kubectl apply -k deploy/k8s` 一次起全套；3 副本、`maxUnavailable: 0`、只读根文件系统、非 root、drop ALL、
+   `kubectl apply -k deploy/k8s` 一次起全套；默认 8 副本（HPA 在 3–8 之间伸缩）、`maxUnavailable: 0`、只读根文件系统、非 root、drop ALL、
    `/health` 探针、`emptyDir` 数据卷、CPU 70% 的 HPA、`minAvailable: 2` 的 PDB。
 3. **镜像瘦身**（`Dockerfile`）：多阶段构建 + `python:3.14-alpine`，venv 独立安装、删 pip/setuptools/wheel 与 `.pyc`；
    镜像从 **245 MB 降到 118 MB**（本机 `docker images` 实测）。
