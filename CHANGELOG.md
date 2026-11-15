@@ -448,6 +448,11 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
   HPA 显示 `cpu: <unknown>`：单节点没装 metrics-server。
   **本阶段新增的真缺陷**：端点摘除是异步的，没有 `preStop` 时滚动会漏连接（早先两次探测分别 3 次、10 次 `URLError`）；
   加 `lifecycle.preStop.exec: ["sh","-c","sleep 5"]` 后稳定为 0，`tests/test_k8s_manifests.py` 同步加了断言。
+  自愈：`kubectl delete pod` 后 ReplicaSet 立刻补副本，替换期间 140 秒 1365 次请求 0 失败。扩到 8 副本后
+  PDB `ALLOWED DISRUPTIONS` = 6（`8 - minAvailable 2`），Eviction API 驱逐一个副本返回 `201 Success` 且 0 失败（1364 次）；
+  降到 2 副本时 `ALLOWED DISRUPTIONS` = 0，同样的驱逐被挡在 `429 TooManyRequests: Cannot evict pod as it would
+  violate the pod's disruption budget`；8 副本下 `rollout restart` 1363 次请求 0 失败。HPA 的 `minReplicas: 3`
+  会把手工 `scale --replicas=2` 拉回来（`cpu: <unknown>` 只是不扩，但下限照管）。
 
 ### 已知限制
 

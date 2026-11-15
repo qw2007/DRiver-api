@@ -16,7 +16,7 @@
 | 门禁现状 | `pytest` **391 个用例、0 失败**（3 个 PostgreSQL 集成用例本机跳过，CI 带 `postgres` service 会真跑）、覆盖率 **93.12%**（2719 语句 / 187 未覆盖，CI 卡 90% 底线）；`ruff check .` / `ruff format --check src tests deploy examples`（79 files）/ `mypy`（47 files，含 `deploy/` 与 `examples/`）/ `bandit` 全绿 |
 | CI | 三个任务：`test`（Python **3.11 / 3.12 / 3.14** 矩阵 + `postgres` service）、`deploy`（compose 建镜像 + 健康轮询 + 接口冒烟）、`publish`（master 上推 GHCR `ghcr.io/qw2007/driver-platform:<版本>` 与 `:sha-<7位>`）；`deploy` 里还含多副本 overlay / `nginx -t` / 验收脚本语法的静态校验 |
 | 一键起全平台 | 仓库根执行 `docker compose up -d --build` → 平台 `:8000`、Prometheus `:9090`、Grafana `:3000`（`admin`/`admin`）；多副本见 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d --scale driver-platform=3`；K8s 见 `kubectl apply -k deploy/k8s`（需先把镜像弄进集群，见 README） |
-| 下一步 | 九阶段目标与四轮收口都已完成（四项决策 + 八项补齐 + 五项编排分发）。K8s 清单已在 Docker Desktop 的单节点集群上真跑过：`kubectl apply -k deploy/k8s` → 3 副本就绪 → 集群内调 `search_database` 正常 → `rollout restart` 期间 1367 次请求 0 失败。剩下要外部资源：GHCR 私有镜像的 `imagePullSecrets`、HPA 的 metrics-server、多节点集群 |
+| 下一步 | 九阶段目标与四轮收口都已完成（四项决策 + 八项补齐 + 五项编排分发）。K8s 清单已在 Docker Desktop 的单节点集群上真跑过：`kubectl apply -k deploy/k8s` → 副本就绪 → 集群内调 `search_database` 正常 → 删 Pod 自愈（1365 次请求 0 失败）→ 扩到 8 副本（PDB `ALLOWED DISRUPTIONS` 6，驱逐 201、0 失败）→ 降到 2 副本时 PDB 把驱逐挡成 `429`。剩下要外部资源：GHCR 私有镜像的 `imagePullSecrets`、HPA 的 metrics-server、多节点集群 |
 
 ---
 

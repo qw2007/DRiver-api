@@ -301,8 +301,15 @@ kubectl -n driver-platform get pods,svc,hpa,pdb
   `docker save driver-platform:0.1.0 -o dp-image.tar` → 特权 Pod 挂宿主根目录 → `chroot /host /usr/local/bin/ctr -n k8s.io images import`
   → `ctr images tag` 成 `ghcr.io/qw2007/driver-platform:0.1.0`（Deployment 里的名字），配合默认的 `IfNotPresent`。
   真部署应给命名空间配 `imagePullSecrets`。
+- **自愈与 PDB 都实测过**：`kubectl delete pod` 删掉一个副本后 ReplicaSet 立刻补一个，替换期间集群内探针
+  140 秒 1365 次请求 0 失败；扩到 8 副本后 PDB 的 `ALLOWED DISRUPTIONS` 从 6 变 … 仍是 6（`8 - minAvailable 2`），
+  用 Eviction API 驱逐一个副本返回 `201 Success` 且继续 0 失败（1364 次）；
+  **降到 minAvailable 同数（2 副本）时 `ALLOWED DISRUPTIONS` 变 0，同样的驱逐请求被挡**：
+  `Error from server (TooManyRequests): Cannot evict pod as it would violate the pod's disruption budget.`
+  8 副本下再 `rollout restart` 一轮，1363 次请求 0 失败。
 - **HPA 报 `cpu: <unknown>`**：单节点集群没装 metrics-server，HPA 只能读 `minReplicas`，不会真的扩缩容；
-  这是集群组件的缺口，不是清单的问题。
+  这是集群组件的缺口，不是清单的问题。顺带发现：手工 `kubectl scale --replicas=2` 会被 HPA 拉回 `minReplicas: 3`
+  —— 想临时少副本得连 HPA 一起改。
 
 ## 版本、质量门禁与发布
 
