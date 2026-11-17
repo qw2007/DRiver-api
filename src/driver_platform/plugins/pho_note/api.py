@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from driver_platform.errors import (
@@ -24,6 +25,8 @@ from driver_platform.errors import (
     PluginNotFoundError,
 )
 from driver_platform.plugins.pho_note.ai import NoteAI
+from driver_platform.plugins.pho_note.mobile import ICON_SVG, MOBILE_HTML
+from driver_platform.plugins.pho_note.mobile import manifest as mobile_manifest_dict
 from driver_platform.plugins.pho_note.plugin import PhoNotePlugin
 from driver_platform.plugins.pho_note.store import Store
 from driver_platform.plugins.pho_note.sync import SyncConfig
@@ -193,6 +196,20 @@ class ApplyBody(BaseModel):
 
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/notes/api", tags=["pho-note"])
+
+    # 手机版：一页自带全部逻辑的 HTML（安卓上只做「导入图片 → 挑图 → 组成笔记 / 读笔记」）。
+    # 不需要凭证也能拿到这一页——它本身没有数据；页面里的每个请求照样过 Read/Write 作用域。
+    @router.get("/m", response_class=HTMLResponse, include_in_schema=False)
+    def mobile_page() -> HTMLResponse:
+        return HTMLResponse(MOBILE_HTML)
+
+    @router.get("/m/manifest.webmanifest", include_in_schema=False)
+    def mobile_manifest() -> dict[str, Any]:
+        return mobile_manifest_dict()
+
+    @router.get("/m/icon.svg", include_in_schema=False)
+    def mobile_icon() -> Response:
+        return Response(content=ICON_SVG, media_type="image/svg+xml")
 
     @router.get("/tree", dependencies=[Read])
     def tree(store: StoreDep) -> list[dict[str, Any]]:

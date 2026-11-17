@@ -462,10 +462,47 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 - 镜像仍钉 amd64 摘要的第三方服务（Prometheus/Grafana）与标签基础镜像的取舍未变；GHCR 仓库为私有，拉取需 `imagePullSecrets`。
 - traceparent 不采样、不导出 span；下游服务若忽略该头，链路只到「本进程 → 下游进程」这一跳。
 
+## 非阶段交付：PhoNote 0.3.0——安装程序与手机版（2026-11-17）
+
+### 目标
+
+把「能跑」变成「能装、手机上也能用」：PhoNote 桌面版要有符合 Windows 习惯的安装程序，
+安卓侧在拿不到截屏热键与文件系统的前提下只做「导入图片 → 组笔记 → 读笔记」。
+
+### 交付物
+
+1. **手机版页面**（`src/driver_platform/plugins/pho_note/mobile.py`）：`GET /notes/api/m` 内联 11KB HTML（PWA 可「添加到主屏幕」）、`GET /notes/api/m/manifest.webmanifest`、`GET /notes/api/m/icon.svg`；只在 `DRIVER_NOTES_UI=1` 时挂载、`include_in_schema=False`；页面不含数据所以不要凭证，页面内每个请求仍过 `notes_read`/`notes_write`。
+2. **`tests/test_pho_note_mobile.py`**（5 例）：页面/清单/图标 200、`ui=False` 时 404、导入→缓冲区→组笔记→详情→图片字节全链路、只读钥匙 403。
+3. **内置后端 `--host`**（PhoNote 仓库 `backend/sidecar.py`）：默认 `127.0.0.1`，`0.0.0.0` 供同一 Wi-Fi 的手机访问。
+4. **桌面端 LAN 开关**（PhoNote 仓库）：设置里「允许手机访问」→ 后端改绑 `0.0.0.0` 并自动重启，对话框显示 `http://<局域网 IP>:<端口>/notes/api/m`；地址优先真网卡，跳过 WSL/虚拟网卡与 `169.254.*`。
+5. **NSIS 安装程序**（PhoNote 仓库 `package.json` 的 `build` + `build/icon.ico` + `scripts/build-backend.ps1`）：`PhoNote-Setup-0.3.0-x64.exe`，per-user 安装到 `%LOCALAPPDATA%\Programs\PhoNote`、可选目录、桌面与开始菜单快捷方式、控制面板卸载项。
+
+### 关键决策与理由
+
+- **安卓做网页不做 APK**：本机没有 Android SDK/JDK/gradle，打不出可签名的 APK；而内置后端本来就提供了一个 HTTP 服务，加一个手机友好的页面就能覆盖「只能导入图片」这条需求，还顺带支持了 iPhone。
+- **HTML 内联成 Python 字符串**：PyInstaller 只收集 Python 模块，独立的 `.html` 数据文件在打包版里会消失（之前的 `mobile.html` 草稿已删，避免两处真话）。
+- **页面不要凭证、请求要凭证**：页面本身没有数据，加一层凭证只会让手机第一次打开就卡住；真正的权限仍然落在每个 REST 请求的作用域上。
+- **LAN 开关默认关**：把服务绑到 `0.0.0.0` 是暴露面，必须用户显式勾选；勾选后提示防火墙可能弹窗。
+- **安装程序用 electron-builder NSIS**：不引入 WiX/Inno 这类额外工具链，NSIS 的目标配置就够；per-user 安装避开 UAC 提权。
+- **不做代码签名**：没有证书，SmartScreen 会提示一次，已写进 README 与已知限制。
+
+### 验收证据
+
+- 平台门禁：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **81 files**；`mypy` → **48 source files**；`pytest --cov --cov-fail-under=90` → **396 个用例、0 失败**，覆盖率 **93.20%**（2736 语句 / 186 未覆盖）。
+- 手机版页面：`GET /notes/api/m` → 200（11536 字节）；`POST /captures`（`source=android`）→ `cap_657d863751a5480c`；`POST /notes` → `nod_777c5756cd454cba`「手机导入测试」；390px 视口下正文不再被横向截断。
+- 局域网：内置后端监听 `0.0.0.0:60842`，`GET http://192.168.0.106:60842/notes/api/m` → 200（11536 字节）。
+- 安装程序：`npx electron-builder --win nsis` exit 0 → `PhoNote-Setup-0.3.0-x64.exe` **127,727,489 字节**；`/S` 安装 exit 0；注册表卸载项 `DisplayName "PhoNote 0.3.0"` / `Publisher Wang Qian`；安装目录里 `resources\app\backend\bin\phonote-backend.exe` **41,146,020 字节**；从安装目录启动后 `/notes/api/m` 200、文件树两篇笔记。
+
+### 已知限制
+
+安装包未签名（SmartScreen 提示）；只出 Windows x64；无自动更新；手机侧只有「导入/组笔记/读笔记」；LAN 模式无鉴权（仅限可信局域网）；手机与电脑必须同一网段。
+
+---
+
 ## 当前状态（截至最新提交）
 
 - **已完成**：阶段 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 —— 任务书的九阶段验收标准全部落地，外加 8 次文档提交、1 次工具链与环境提交、2 次任务状态更新，以及 5 个非阶段交付（PhoNote 插件 P0/P1/P2/P3 + 收口四项决策 + 收口八项能力补齐，见上文；换机器或换会话继续开发前先读 [`docs/handoff.md`](docs/handoff.md)）；
-- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **79 files** already formatted；`mypy` → Success: no issues found in **47 source files**（已覆盖 `src` + `deploy` + `examples`）；`pytest --cov --cov-fail-under=90` → **391 个用例、0 失败**（3 个 PostgreSQL 集成用例本机无库跳过；CI 里带 `postgres` service 会真跑），覆盖率 **93.12%**（2719 语句 / 187 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
+- **门禁（最近一次全量验证）**：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **81 files** already formatted；`mypy` → Success: no issues found in **48 source files**（已覆盖 `src` + `deploy` + `examples`）；`pytest --cov --cov-fail-under=90` → **396 个用例、0 失败**（3 个 PostgreSQL 集成用例本机无库跳过；CI 里带 `postgres` service 会真跑），覆盖率 **93.20%**（2736 语句 / 186 未覆盖）；CI 已把覆盖率门禁（90%）与 `bandit` / `pip-audit` 一起接进去；
 - **包版本**：**`0.1.0`**（`pyproject.toml` 与 `src/driver_platform/__init__.py` 同源，compose 镜像标签跟随；对外契约版本仍走各工具的 `contract_version`，与包版本解耦）；发布物是 git tag `v0.1.0` + GitHub Release + CI 推到 GHCR 的镜像（`:0.1.0` 与 `:sha-<7位>`）；
 - **下一步**：九阶段目标与四轮收口全部落地（详见上文各节），K8s 清单已在 Docker Desktop 的单节点集群上真跑过（`kubectl apply -k` → 3 副本就绪 → 滚动 1367 次请求 0 失败）。剩下的都是「需要外部资源或收益不足」：镜像推私有仓库的拉取凭据（`imagePullSecrets`）、HPA 依赖的 metrics-server、3.11/3.12 的本机复现。
 

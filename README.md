@@ -184,6 +184,8 @@ curl http://127.0.0.1:8000/notes/api/tree  # 给壳用的 REST 层（DRIVER_NOTE
 
 REST 层（`/notes/api/*`，挂载由 `DRIVER_NOTES_UI=1` 控制）给壳用：读操作要 `notes_read`、写操作要 `notes_write` 作用域；上传仍是 JSON base64（不引 `python-multipart`），单图上限 8 MB。AI 相关端点：`GET /notes/{id}/messages`、`POST /notes/{id}/summarize`、`POST /notes/{id}/chat`、`POST /notes/{id}/apply`；备份与同步：`POST /backup`、`GET /sync/status`、`POST /sync/push`、`POST /sync/pull`。
 
+**手机版页面（同 `DRIVER_NOTES_UI=1` 时挂载）**：`GET /notes/api/m` 是给安卓/iPhone 用的轻页面（PWA，可「添加到主屏幕」），只做「导入图片 → 挑图 → 组成笔记 → 读笔记」——手机没有桌面级截屏热键，也拿不到本机文件系统。配套 `GET /notes/api/m/manifest.webmanifest` 与 `GET /notes/api/m/icon.svg`；页面本身不要凭证（不含数据），页面里每个请求照样过 `notes_read`/`notes_write`。手机要连进来，后端得绑到局域网（独立桌面版在设置里勾「允许手机访问」，平台侧自己起服务时用 `--host 0.0.0.0`）。
+
 AI 按 `DRIVER_NOTES_LLM` 四选一：
 
 | 取值 | 行为 | 需要的配置 |
