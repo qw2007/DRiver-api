@@ -400,3 +400,8 @@ docs/                   阶段设计说明（stages/）+ 任务书 + 变更日�
 - PostgreSQL 插件只做「只读等值查询」，没有事务控制、连接池、SSL 参数可调，`connect_timeout` 固定 5 秒；没装 `psycopg` 时插件装载直接失败（不降级）。
 - PhoNote 的截图压缩依赖 Pillow：没装时图片按原样落盘（不报错，但体积不受控）；`/metrics` 默认仍公开（要收紧就开 `DRIVER_METRICS_PROTECTED=1`）；compose 里的演示钥匙是**默认值**，对外部署前必须用 `.env` 覆盖。
 - 本机（Windows + DSH 沙箱）有三处环境级坑：pip / 全量 pytest / docker / **联网 Git 操作**需提权，GitHub 需 `sslBackend=schannel` 直连，Docker 需镜像加速——**这些只是本机噪声，不影响 CI**，逐条解法见[环境与工具手册](docs/environment.md)。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。包本身也声明了 `License-Expression: MIT` 并把 `LICENSE` 打进 wheel 的
+`dist-info/licenses/`，安装方能直接看到条款。

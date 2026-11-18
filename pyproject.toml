@@ -3,6 +3,8 @@ name = "driver-platform"
 version = "0.1.0"
 description = "AI Agent 与数据库等工具之间的中间层驱动平台"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
