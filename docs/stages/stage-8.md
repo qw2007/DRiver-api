@@ -353,7 +353,7 @@ INFO:     Finished server process [1]
 
 - 本机会话里 **Python 子进程被沙箱限制**：`python deploy/rollout.py` 报
   `RuntimeError: 命令失败（exit 1）：docker compose … build driver-platform`，Docker 侧原文是
-  `open C:\Users\Administrator\.docker\buildx\.lock: Access is denied.`；不构建时则报
+  `open <用户目录>\.docker\buildx\.lock: Access is denied.`；不构建时则报
   `permission denied while trying to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`。
   分步实验（pwsh → `docker compose build` 成功；pwsh → `cmd /c docker compose build` 成功；
   pwsh → `cmd /c echo x > …\.probe-write` 成功；pwsh → `.venv\Scripts\python.exe -c "open(path,'w')"` 被拒）

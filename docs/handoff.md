@@ -151,7 +151,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/tools/execute \
 
 ### 4.1 新会话的开场白（可直接复制）
 
-> 项目在 `D:\DSh\driver-platform-v2`（或新设备上的路径），GitHub 是 `qw2007/DRiver-api`，已同步到 `master`。
+> 项目在 `<平台仓库>`（或新设备上的路径），GitHub 是 `qw2007/DRiver-api`，已同步到 `master`。
 > 先读 `docs/handoff.md`、`docs/task-brief.md`、`CHANGELOG.md` 与 `docs/stages/stage-8.md` 了解现状（九阶段已全部完成），
 > 然后按第 3.2 / 3.3 节挑下一步：先拍板待定项，或直接开工最接近生产的那几条（镜像瘦身与非 root 运行、`/metrics` 收进内网、PostgreSQL 插件）。
 > 每阶段的固定动作不变：先出设计说明再落地，结束时 `ruff check .` / `ruff format --check src tests deploy examples` / `mypy` / `pytest` 全绿并保持 CI 可跑。

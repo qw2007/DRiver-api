@@ -3,7 +3,7 @@
 本文件记录**本机 Windows 开发环境**的实测事实与本项目的落地解法：装了什么、哪些命令要提权、环境坑怎么绕过。
 CI（GitHub Actions `ubuntu-latest` + Python 3.14）不受本文件约束——CI 里所有命令都不需要提权。
 
-实测时间：2026-10-01，工作目录 `D:\DSh\driver-platform-v2`。
+实测时间：2026-10-01，工作目录 `<平台仓库>`。
 
 ## 1. 运行时与工具清单
 
@@ -17,8 +17,8 @@ CI（GitHub Actions `ubuntu-latest` + Python 3.14）不受本文件约束——C
 | Docker | 29.8.1（Docker Desktop，linux 引擎，`overlayfs`，16 CPU / 16 GB） | 阶段 5 的 Prometheus/Grafana、阶段 7 的 compose | 数据盘已迁到 `D:\Develop\Docker\DockerDesktopWSL`，见 §6 |
 | docker compose | v5.5.1 | 阶段 7 `docker compose up` | 阶段 7 才会验证 |
 | kubectl | v1.36.1 | 阶段 8（多副本/滚动更新）预备 | 未接集群，阶段 8 才用 |
-| GitHub CLI `gh` | 2.102.0（`D:\DSh\tools\bin\gh.exe`） | 查仓库、建仓库、查 Actions | 非 choco 安装，见 §4.5 |
-| jq | 1.8.2（`D:\DSh\tools\bin\jq.exe`） | 解析 JSON 响应 | 同上 |
+| GitHub CLI `gh` | 2.102.0（`<工具目录>\bin\gh.exe`） | 查仓库、建仓库、查 Actions | 非 choco 安装，见 §4.5 |
+| jq | 1.8.2（`<工具目录>\bin\jq.exe`） | 解析 JSON 响应 | 同上 |
 | Chocolatey | 2.7.4 | 唯一存在的系统级包管理器 | 非提权无法写 `lib-bad`，见 §4.5 |
 
 `.venv` 内关键 Python 包（`python -m pip list` 实测）：
@@ -121,7 +121,7 @@ DSH 在 `workspace-write` 模式下用**受限令牌**跑命令，该令牌里 `
 | 全量 `pytest` | `tmp_path` 建 `0o700` 目录（§4.1） |
 | 所有 `docker` 命令 | CLI 要连命名管道 `//./pipe/docker_engine`，受限进程不能开管道 |
 | Git 自带的 msys 程序（如 `openssl.exe`） | 受限模式下直接 `0xC0000005`（访问冲突） |
-| 写工作区外的文件（`~/.gitconfig`、用户 `PATH`、`D:\DSh\tools`） | 沙箱只授权工作区 |
+| 写工作区外的文件（`~/.gitconfig`、用户 `PATH`、`<工具目录>`） | 沙箱只授权工作区 |
 
 ### 4.3 标准提权调用
 
@@ -139,14 +139,14 @@ sandbox_permissions: danger-full-access
 docker images                                               # 需 danger-full-access
 ```
 
-提权进程留下的 `0o700` 目录（`pytest-of-Administrator`、`pytest-cache-files-*`）受限模式**连读都拒绝**，必须再提权删：
+提权进程留下的 `0o700` 目录（`pytest-of-<用户>`、`pytest-cache-files-*`）受限模式**连读都拒绝**，必须再提权删：
 
 ```powershell
-icacls pytest-of-Administrator /reset /t /c /q
-Remove-Item -Recurse -Force pytest-of-Administrator
+icacls pytest-of-<用户> /reset /t /c /q
+Remove-Item -Recurse -Force pytest-of-<用户>
 ```
 
-**残留会落在工作区根部**：本机 `tempfile.gettempdir()` 取不到可用的 `TEMP`，退化成当前目录，于是 pytest 的 basetemp 变成 `D:\DSh\driver-platform-v2\pytest-of-Administrator\`（提权跑也一样）。`.gitignore` 已收录 `pytest-of-*/` 与 `pytest-cache-files-*/`，不会误提交；但受限模式删不掉它，清理必须提权。
+**残留会落在工作区根部**：本机 `tempfile.gettempdir()` 取不到可用的 `TEMP`，退化成当前目录，于是 pytest 的 basetemp 变成 `<平台仓库>\pytest-of-<用户>\`（提权跑也一样）。`.gitignore` 已收录 `pytest-of-*/` 与 `pytest-cache-files-*/`，不会误提交；但受限模式删不掉它，清理必须提权。
 
 ### 4.3.1 提权也救不了 **Python 子进程**（阶段 8 实测）
 
@@ -156,11 +156,11 @@ Remove-Item -Recurse -Force pytest-of-Administrator
 | --- | --- |
 | `docker compose build driver-platform`（直接执行） | 成功 |
 | `cmd /c "docker compose build driver-platform"` | 成功 |
-| `cmd /c "echo x > C:\Users\Administrator\.docker\buildx\.probe-write"` | 成功 |
-| `.venv\Scripts\python.exe -c "open(r'C:\Users\Administrator\.docker\buildx\.probe-write','w')"` | `PermissionError: [Errno 13] Permission denied` |
-| `.venv\Scripts\python.exe deploy\rollout.py --build` | `RuntimeError: 命令失败（exit 1）：docker compose … build`，Docker 原文 `open C:\Users\Administrator\.docker\buildx\.lock: Access is denied.` |
+| `cmd /c "echo x > <用户目录>\.docker\buildx\.probe-write"` | 成功 |
+| `.venv\Scripts\python.exe -c "open(r'<用户目录>\.docker\buildx\.probe-write','w')"` | `PermissionError: [Errno 13] Permission denied` |
+| `.venv\Scripts\python.exe deploy\rollout.py --build` | `RuntimeError: 命令失败（exit 1）：docker compose … build`，Docker 原文 `open <用户目录>\.docker\buildx\.lock: Access is denied.` |
 
-即：Python 进程既写不了工作区外的路径，也打不开 Docker 命名管道（`.lock` 的 ACL 本身正常，`icacls` 显示 SYSTEM / Administrators / Administrator 全 `F`）。**后台任务同样受限。**
+即：Python 进程既写不了工作区外的路径，也打不开 Docker 命名管道（`.lock` 的 ACL 本身正常，`icacls` 显示 SYSTEM / Administrators / 用户 全 `F`）。**后台任务同样受限。**
 
 应对（阶段 8 采用）：本机验收用**等价的 PowerShell 序列**（`deploy/rollout.py` 的手工版），
 `deploy/rollout.py` / `deploy/traffic_probe.py` 保持为普通环境与 CI 里的自动化路径（CI 只做静态校验，见 `docs/stages/stage-8.md`）。
@@ -175,7 +175,7 @@ Remove-Item -Recurse -Force pytest-of-Administrator
 ### 4.5 包管理器事实
 
 - `choco install gh jq -y` **失败**：`Cannot create directory "C:\ProgramData\chocolatey\lib-bad". Error was: System.UnauthorizedAccessException`。即使给足文件访问权限，非提权（UAC 过滤令牌）进程仍写不了 `C:\ProgramData\chocolatey`。
-- 代价最低的替代：从 GitHub Releases 下载 zip 到 `D:\DSh\tools\bin`（`curl.exe -sSL --ssl-no-revoke`），再把该目录追加进**用户** `PATH`——不需要管理员。
+- 代价最低的替代：从 GitHub Releases 下载 zip 到 `<工具目录>\bin`（`curl.exe -sSL --ssl-no-revoke`），再把该目录追加进**用户** `PATH`——不需要管理员。
 - 本机 `winget` 在受限模式下无输出（不可用）；无 scoop。
 
 ## 5. GitHub 直连（已修复）
@@ -191,14 +191,14 @@ Remove-Item -Recurse -Force pytest-of-Administrator
 
 结论：**TLS 本身是通的，卡在"吊销检查"和"CA 来源"**；`ghproxy.net` 镜像只能读（fetch 得到），push 会被 GitHub 拒（`remote: Invalid username or token. Password authentication is not supported for Git operations.`）。
 
-**已落盘的全局配置**（`C:\Users\Administrator\.gitconfig`）：
+**已落盘的全局配置**（`<用户目录>\.gitconfig`）：
 
 ```
 http.sslBackend = schannel
 http.schannelCheckRevoke = false
 ```
 
-同时**移除了**原有的 `url."https://ghproxy.net/https://github.com/".insteadOf = https://github.com/`（它会把 push 也改写到镜像）。备份：`C:\Users\Administrator\.gitconfig.bak-20261001-120108`（回滚＝覆盖回去）。
+同时**移除了**原有的 `url."https://ghproxy.net/https://github.com/".insteadOf = https://github.com/`（它会把 push 也改写到镜像）。备份：`<用户目录>\.gitconfig.bak-<时间戳>`（回滚＝覆盖回去）。
 
 验证（提权；**不需要再传任何 `-c` 参数**）：
 
@@ -215,7 +215,7 @@ git push --dry-run origin master   # -> Everything up-to-date     (exit 0)
 | --- | --- |
 | 引擎刚起来时 `docker pull` | `failed to resolve reference "docker.io/...": ... registry-1.docker.io ... connection reset by peer` |
 
-解法：`C:\Users\Administrator\.docker\daemon.json` 增加 `registry-mirrors`（daocloud / 1panel / xuanyuan / 1ms），先备份 `daemon.json.bak`，再 `docker desktop restart`。
+解法：`<用户目录>\.docker\daemon.json` 增加 `registry-mirrors`（daocloud / 1panel / xuanyuan / 1ms），先备份 `daemon.json.bak`，再 `docker desktop restart`。
 
 验证：`docker run --rm hello-world` → exit 0；`docker pull prom/prometheus`、`docker pull grafana/grafana` 均成功（摘要见 §2）。
 
@@ -223,9 +223,9 @@ git push --dry-run origin master   # -> Everything up-to-date     (exit 0)
 
 ## 7. 机器其他事实
 
-- 磁盘：`C:` 约 33.9 GB 可用、`D:` 约 2.65 TB、`E:` 约 502 GB 可用 → **本机项目放 `D:\DSh`**。
+- 磁盘：`C:` 约 33.9 GB 可用、`D:` 约 2.65 TB、`E:` 约 502 GB 可用 → **本机项目放 `<本机工作区>`**。
 - 本机**没有** `gh` 之外的 GitHub 工具；无 SSH 密钥（`~/.ssh/id_ed25519`、`~/.ssh/id_rsa` 均不存在）、无 `~/.git-credentials`（凭据在凭据管理器里）。
-- Git 配置碎片：`~/.gitconfig` 里写坏的 `[usere] name = qw.pc` 是无效键（**`user.name` 实际未设置**，提交需显式 `-c user.name=...`，本项目提交用 `-c user.name="Wang Qian" -c user.email="Wang.qian__@outlook.com"`）；系统配置里 `init.defaultBranch = master`、`core.autocrlf = true`、`http.sslCAInfo = C:/Program Files/Git/mingw64/etc/ssl/certs/ca-bundle.crt`。
+- Git 配置碎片：`~/.gitconfig` 里写坏的 `[usere] name = <某个值>` 是无效键（节名拼错了）（**`user.name` 实际未设置**，提交需显式 `-c user.name=...`，本项目提交用 `-c user.name="<你的名字>" -c user.email="<你的邮箱>"`）；系统配置里 `init.defaultBranch = master`、`core.autocrlf = true`、`http.sslCAInfo = C:/Program Files/Git/mingw64/etc/ssl/certs/ca-bundle.crt`。
 
 ## 8. 一分钟自检
 

@@ -231,7 +231,7 @@
 - **只补真正要用的**：运行时加 `prometheus-client`（阶段 5 的 `/metrics`）；dev 加 `pytest-cov`、`bandit`、`pip-audit`（覆盖率 + 两项安全门禁）。`uv` / `poetry` / `pre-commit` / `kind` / `helm` / 各类数据库 CLI **一律不装** —— 没有对应阶段需求，装了只是维护面。
 - **安全检查进常规门禁**：`bandit -r src` 与 `pip-audit --cache-dir .pip-audit-cache` 写进 README 检查命令。`sqlite.py` 初报 2 条 `B608`（SQL 注入）**确认为误报**：表名与列名都先过白名单校验（`self._tables()` / `available`），拼进 SQL 的标识符经 `_quote_identifier()` 双引号包裹并转义 `"`，所有**值**一律 `?` 绑定，库以 `mode=ro` 只读打开 → 就地 `# nosec B608` 并写明理由，比全局跳过 B608 更窄、也不掩盖将来的真问题。
 - **GitHub 直连而不是走镜像**：`~/.gitconfig` 原有 `url."https://ghproxy.net/https://github.com/".insteadOf`，读能用但 push 必被 GitHub 拒（`Invalid username or token`）。本机 TLS 卡在**吊销检查**而非证书链，故改为 `http.sslBackend=schannel` + `http.schannelCheckRevoke=false` 并移除镜像改写；备份留在 `~/.gitconfig.bak-20261001-120108`。
-- **gh / jq 不走 Chocolatey**：非提权进程写不了 `C:\ProgramData\chocolatey\lib-bad`（UAC 过滤令牌），改为从 GitHub Releases 解压到 `D:\DSh\tools\bin` 并追加**用户** PATH（不需要管理员）。
+- **gh / jq 不走 Chocolatey**：非提权进程写不了 `C:\ProgramData\chocolatey\lib-bad`（UAC 过滤令牌），改为从 GitHub Releases 解压到 `<工具目录>\bin` 并追加**用户** PATH（不需要管理员）。
 - **Docker 镜像走国内加速**：`~/.docker/daemon.json` 增 `registry-mirrors` 后拉取正常（直连 `registry-1.docker.io` 被 reset）。
 - **两个镜像要钉摘要**：`prom/prometheus` 与 `grafana/grafana` 目前是 `latest`，阶段 5 组 Compose 时必须换成手册 §2 记录的 digest，否则「可复现部署」不成立。
 
@@ -491,7 +491,7 @@ restored: {"name": "第一讲", "body_md": "触发器与视图", "images": 1, "i
 - 平台门禁：`ruff check .` → All checks passed；`ruff format --check src tests deploy examples` → **81 files**；`mypy` → **48 source files**；`pytest --cov --cov-fail-under=90` → **396 个用例、0 失败**，覆盖率 **93.20%**（2736 语句 / 186 未覆盖）。
 - 手机版页面：`GET /notes/api/m` → 200（11536 字节）；`POST /captures`（`source=android`）→ `cap_657d863751a5480c`；`POST /notes` → `nod_777c5756cd454cba`「手机导入测试」；390px 视口下正文不再被横向截断。
 - 局域网：内置后端监听 `0.0.0.0:60842`，`GET http://192.168.0.106:60842/notes/api/m` → 200（11536 字节）。
-- 安装程序：`npx electron-builder --win nsis` exit 0 → `PhoNote-Setup-0.3.0-x64.exe` **127,727,489 字节**；`/S` 安装 exit 0；注册表卸载项 `DisplayName "PhoNote 0.3.0"` / `Publisher Wang Qian`；安装目录里 `resources\app\backend\bin\phonote-backend.exe` **41,146,020 字节**；从安装目录启动后 `/notes/api/m` 200、文件树两篇笔记。
+- 安装程序：`npx electron-builder --win nsis` exit 0 → `PhoNote-Setup-0.3.0-x64.exe` **127,727,489 字节**；`/S` 安装 exit 0；注册表卸载项 `DisplayName "PhoNote 0.3.0"`；安装目录里 `resources\app\backend\bin\phonote-backend.exe` **41,146,020 字节**；从安装目录启动后 `/notes/api/m` 200、文件树两篇笔记。
 
 ### 已知限制
 

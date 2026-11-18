@@ -158,7 +158,7 @@ curl http://127.0.0.1:8000/v1/protocols/openai/tools
 
 ```json
 {"mcpServers": {"driver-platform": {
-  "command": "D:\\DSh\\driver-platform-v2\\.venv\\Scripts\\python.exe",
+  "command": "<驱动平台仓库>\\.venv\\Scripts\\python.exe",
   "args": ["-m", "driver_platform.protocols.mcp_server"],
   "env": {"DRIVER_PROTOCOLS": "mcp", "DRIVER_PLUGINS": "sqlite", "DRIVER_SQLITE_PATH": "/tmp/demo.db"}}}}
 ```
